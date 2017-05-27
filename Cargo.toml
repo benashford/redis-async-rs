@@ -1,0 +1,6 @@
+[package]
+name = "redis-async"
+version = "0.1.0"
+authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
+
+[dependencies]
