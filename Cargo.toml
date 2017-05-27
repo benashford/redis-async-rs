@@ -9,3 +9,4 @@ description = "An asynchronous Redis client for Rust"
 [dependencies]
 futures = "0.1.13"
 tokio-core = "0.1.7"
+tokio-io = "0.1.2"
