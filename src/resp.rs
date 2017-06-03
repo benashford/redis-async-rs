@@ -11,21 +11,25 @@ pub enum RespValue {
     BulkString(Vec<u8>)
 }
 
-impl<'a> From<&'a str> for RespValue {
-    fn from(a: &'a str) -> RespValue {
-        RespValue::BulkString(a.as_bytes().to_vec())
+pub trait ToResp {
+    fn to_resp(&self) -> RespValue;
+}
+
+impl<'a> ToResp for &'a str {
+    fn to_resp(&self) -> RespValue {
+        RespValue::BulkString(self.as_bytes().into())
     }
 }
 
-impl<'a> From<(&'a str, &'a str)> for RespValue {
-    fn from((a, b): (&'a str, &'a str)) -> RespValue {
-        RespValue::Array(vec![a.into(), b.into()])
+impl<'a> ToResp for &'a [&'a str] {
+    fn to_resp(&self) -> RespValue {
+        RespValue::Array(self.as_ref().iter().map(|x| x.to_resp()).collect())
     }
 }
 
-impl<'a> From<(&'a str, &'a str, &'a str)> for RespValue {
-    fn from((a, b, c): (&'a str, &'a str, &'a str)) -> RespValue {
-        RespValue::Array(vec![a.into(), b.into(), c.into()])
+impl<T: ToResp> From<T> for RespValue {
+    fn from(from: T) -> RespValue {
+        from.to_resp()
     }
 }
 
