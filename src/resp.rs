@@ -5,7 +5,7 @@ use bytes::BytesMut;
 use tokio_io::codec::{Decoder, Encoder};
 
 // TODO - this stuff - all options
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RespValue {
     Array(Vec<RespValue>),
     BulkString(Vec<u8>)
@@ -29,7 +29,8 @@ impl<'a> From<(&'a str, &'a str, &'a str)> for RespValue {
     }
 }
 
-struct RespCodec;
+/// Codec to read frames
+pub struct RespCodec;
 
 impl Encoder for RespCodec {
     type Item = RespValue;
