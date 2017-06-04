@@ -2,7 +2,6 @@ use std::io;
 use std::net::SocketAddr;
 
 use futures::{Future, Sink, Stream};
-use futures::sync::mpsc;
 
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
