@@ -26,7 +26,6 @@ fn connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=ClientConnection, 
     Box::new(client_con)
 }
 
-
 /// TODO - is the boxing necessary?  It makes the type signature much simpler
 struct ClientSink(Box<Sink<SinkItem=resp::RespValue, SinkError=io::Error>>);
 struct ClientStream(Box<Stream<Item=resp::RespValue, Error=io::Error>>);
