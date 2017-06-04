@@ -63,6 +63,8 @@ mod test {
 
     use tokio_core::reactor::Core;
 
+    use super::resp;
+
     #[test]
     fn can_connect() {
         let mut core = Core::new().unwrap();
@@ -75,5 +77,26 @@ mod test {
         let values = core.run(connection).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], "TEST".into());
+    }
+
+    #[test]
+    fn complex_test() {
+        let mut core = Core::new().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let connection = super::connect(&addr, &core).and_then(|connection| {
+            connection.sender.send(["FLUSH"].as_ref().into()).unwrap();
+            (0..1000).map(|i| {
+                connection.sender.send(["SADD", "test_set", &format!("VALUE: {}", i)].as_ref().into())
+            }).fold((), |_, r| r.unwrap());
+            connection.sender.send(["SMEMBERS", "test_set"].as_ref().into()).unwrap();
+            connection.receiver.0.skip(1001).take(1).collect()
+        });
+        let values = core.run(connection).unwrap();
+        assert_eq!(values.len(), 1);
+        let values = match &values[0] {
+            &resp::RespValue::Array(ref values) => values.clone(),
+            _ => panic!("Not an array")
+        };
+        assert_eq!(values.len(), 1000);
     }
 }
