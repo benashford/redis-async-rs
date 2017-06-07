@@ -1,7 +1,10 @@
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use futures::{Future, Sink, Stream};
+use futures::sync::{mpsc, oneshot};
 
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
@@ -12,6 +15,8 @@ use super::resp;
 /// TODO: comeback and optimise this number
 const DEFAULT_BUFFER_SIZE:usize = 100;
 
+/// Connect to a Redis server and return paired Sink and Stream for reading and writing
+/// asynchronously.
 fn connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
     let handle = core.handle();
     let client_con = TcpStream::connect(addr, &handle).map(move |socket| {
@@ -38,9 +43,50 @@ struct ClientConnection {
     receiver: ClientStream
 }
 
+fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConnection, Error=io::Error>> {
+    let handle = core.handle();
+    let paired_con = connect(addr, core).map(move |connection| {
+        let ClientConnection { sender, receiver } = connection;
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let sender = out_rx.fold(sender.0, |sender, msg| {
+            sender.send(msg).map_err(|_| ())
+        });
+        let resp_queue:Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let receiver_queue = resp_queue.clone();
+        let receiver = receiver.0.for_each(move |msg| {
+            let mut queue = receiver_queue.lock().expect("Untainted lock");
+            let dest = queue.pop_front().expect("Not empty queue");
+            dest.send(msg).expect("Successful send");
+            Ok(())
+        });
+        handle.spawn(sender.map(|_| ()));
+        handle.spawn(receiver.map_err(|_| ()));
+        PairedConnection {
+            out_tx: out_tx,
+            resp_queue: resp_queue
+        }
+    });
+    Box::new(paired_con)
+}
+
+struct PairedConnection {
+    out_tx: mpsc::UnboundedSender<resp::RespValue>,
+    resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>
+}
+
+impl PairedConnection {
+    fn send(&self, msg: resp::RespValue) -> Box<Future<Item=resp::RespValue, Error=()>> {
+        let (tx, rx) = oneshot::channel();
+        let mut queue = self.resp_queue.lock().expect("Untainted queue");
+        queue.push_back(tx);
+        mpsc::UnboundedSender::send(&self.out_tx, msg).expect("Successful send");
+        Box::new(rx.map_err(|_| ()))
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use std::io;
+    use std::{io, thread, time};
 
     use futures::{Future, Sink, Stream};
     use futures::stream;
@@ -85,5 +131,23 @@ mod test {
             _ => panic!("Not an array")
         };
         assert_eq!(values.len(), 1000);
+    }
+
+    #[test]
+    fn can_paired_connect() {
+        let mut core = Core::new().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
+            let res_f = connection.send(["PING", "TEST"].as_ref().into());
+            connection.send(["GET", "X"].as_ref().into());
+            connection.send(["SET", "X", "123"].as_ref().into());
+            // TODO - map_err only neccessary to ensure the chain of errors makes sense, 
+            // should instead define a higher-level error type and propagate those 
+            // instead    
+            res_f.map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected"))
+        });
+        let result = core.run(connect_f).unwrap();
+        assert_eq!(result, "TEST".into());
     }
 }
