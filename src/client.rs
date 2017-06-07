@@ -86,7 +86,7 @@ impl PairedConnection {
 
 #[cfg(test)]
 mod test {
-    use std::{io, thread, time};
+    use std::io;
 
     use futures::{Future, Sink, Stream};
     use futures::stream;
