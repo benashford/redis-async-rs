@@ -87,6 +87,7 @@ impl PairedConnection {
 #[cfg(test)]
 mod test {
     use std::io;
+    use std::sync::Arc;
 
     use futures::{Future, Sink, Stream};
     use futures::stream;
@@ -149,5 +150,21 @@ mod test {
         });
         let result = core.run(connect_f).unwrap();
         assert_eq!(result, "TEST".into());
+    }
+
+    #[test]
+    fn complex_paired_connect() {
+        let mut core = Core::new().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
+            let connection = Arc::new(connection);
+            let inner_connection = connection.clone();
+            connection.send(["INCR", "CTR"].as_ref().into()).and_then(move |value| {
+                inner_connection.send(resp::RespValue::Array(vec!["SET".into(), "LASTCTR".into(), value]))
+            }).map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected"))
+        });
+        let result = core.run(connect_f).unwrap();
+        assert_eq!(result, resp::RespValue::SimpleString("OK".into()));
     }
 }
