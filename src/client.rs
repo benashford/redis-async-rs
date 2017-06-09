@@ -143,9 +143,9 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
-            let res_f = connection.send(["PING", "TEST"].as_ref());
-            connection.send(["SET", "X", "123"].as_ref());
-            let wait_f = connection.send(["GET", "X"].as_ref());
+            let res_f = connection.send(vec!["PING", "TEST"]);
+            connection.send(vec!["SET", "X", "123"]);
+            let wait_f = connection.send(vec!["GET", "X"]);
             // TODO - map_err only neccessary to ensure the chain of errors makes sense,
             // should instead define a higher-level error type and propagate those
             // instead
@@ -162,7 +162,7 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
-            connection.send(["INCR", "CTR"].as_ref()).and_then(move |value| {
+            connection.send(vec!["INCR", "CTR"]).and_then(move |value| {
                 let value_str = value.into_string().expect("A string");
                 connection.send(vec!["SET", "LASTCTR", &value_str])
             })
