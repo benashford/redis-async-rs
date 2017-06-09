@@ -10,7 +10,7 @@ use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
 
-use super::resp;
+use super::{error, resp};
 
 /// TODO: comeback and optimise this number
 const DEFAULT_BUFFER_SIZE:usize = 100;
@@ -33,7 +33,7 @@ fn connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=ClientConnection, 
 
 /// TODO - is the boxing necessary?  It makes the type signature much simpler
 struct ClientSink(Box<Sink<SinkItem=resp::RespValue, SinkError=io::Error>>);
-struct ClientStream(Box<Stream<Item=resp::RespValue, Error=io::Error>>);
+struct ClientStream(Box<Stream<Item=resp::RespValue, Error=error::Error>>);
 
 /// A low-level client connection representing a sender and a receiver.
 ///
@@ -43,7 +43,7 @@ struct ClientConnection {
     receiver: ClientStream
 }
 
-fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConnection, Error=io::Error>> {
+fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
     let handle = core.handle();
     let paired_con = connect(addr, core).map(move |connection| {
         let ClientConnection { sender, receiver } = connection;
@@ -54,10 +54,12 @@ fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConne
         let resp_queue:Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> = Arc::new(Mutex::new(VecDeque::new()));
         let receiver_queue = resp_queue.clone();
         let receiver = receiver.0.for_each(move |msg| {
-            let mut queue = receiver_queue.lock().expect("Untainted lock");
-            let dest = queue.pop_front().expect("Not empty queue");
-            dest.send(msg).expect("Successful send");
-            Ok(())
+            let mut queue = receiver_queue.lock().expect("Lock is tainted");
+            let dest = queue.pop_front().expect("Queue is empty");
+            match dest.send(msg) {
+                Ok(()) => Ok(()),
+                Err(_) => Ok(())
+            }
         });
         handle.spawn(sender.map(|_| ()));
         handle.spawn(receiver.map_err(|_| ()));
@@ -65,7 +67,7 @@ fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConne
             out_tx: out_tx,
             resp_queue: resp_queue
         }
-    });
+    }).map_err(|e| e.into());
     Box::new(paired_con)
 }
 
@@ -75,19 +77,19 @@ struct PairedConnection {
 }
 
 impl PairedConnection {
-    fn send(&self, msg: resp::RespValue) -> Box<Future<Item=resp::RespValue, Error=()>> {
+    fn send<R>(&self, msg: R) -> Box<Future<Item=resp::RespValue, Error=error::Error>>
+    where R: Into<resp::RespValue> {
         let (tx, rx) = oneshot::channel();
-        let mut queue = self.resp_queue.lock().expect("Untainted queue");
+        let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
-        mpsc::UnboundedSender::send(&self.out_tx, msg).expect("Successful send");
-        Box::new(rx.map_err(|_| ()))
+        mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Successful send");
+        Box::new(rx.map_err(|e| e.into()))
     }
 }
 
 #[cfg(test)]
 mod test {
     use std::io;
-    use std::sync::Arc;
 
     use futures::{Future, Sink, Stream};
     use futures::stream;
@@ -101,11 +103,12 @@ mod test {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connection = super::connect(&addr, &core).and_then(|connection| {
-            let a = connection.sender.0.send(["PING", "TEST"].as_ref().into());
+        let connection = super::connect(&addr, &core).map_err(|e| e.into()).and_then(|connection| {
+            let a = connection.sender.0.send(["PING", "TEST"].as_ref().into()).map_err(|e| e.into());
             let b = connection.receiver.0.take(1).collect();
             a.join(b)
         });
+
         let (_, values) = core.run(connection).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], "TEST".into());
@@ -115,13 +118,13 @@ mod test {
     fn complex_test() {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
-        let connection = super::connect(&addr, &core).and_then(|connection| {
+        let connection = super::connect(&addr, &core).map_err(|e| e.into()).and_then(|connection| {
             let mut ops = Vec::<resp::RespValue>::new();
             ops.push(["FLUSH"].as_ref().into());
             ops.extend((0..1000).map(|i| ["SADD", "test_set", &format!("VALUE: {}", i)].as_ref().into()));
             ops.push(["SMEMBERS", "test_set"].as_ref().into());
             let ops_r:Vec<Result<resp::RespValue, io::Error>> = ops.into_iter().map(Result::Ok).collect();
-            let send = connection.sender.0.send_all(stream::iter(ops_r));
+            let send = connection.sender.0.send_all(stream::iter(ops_r)).map_err(|e| e.into());
             let receive = connection.receiver.0.skip(1001).take(1).collect();
             send.join(receive)
         });
@@ -140,16 +143,17 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
-            let res_f = connection.send(["PING", "TEST"].as_ref().into());
-            connection.send(["GET", "X"].as_ref().into());
-            connection.send(["SET", "X", "123"].as_ref().into());
-            // TODO - map_err only neccessary to ensure the chain of errors makes sense, 
-            // should instead define a higher-level error type and propagate those 
-            // instead    
-            res_f.map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected"))
+            let res_f = connection.send(["PING", "TEST"].as_ref());
+            connection.send(["SET", "X", "123"].as_ref());
+            let wait_f = connection.send(["GET", "X"].as_ref());
+            // TODO - map_err only neccessary to ensure the chain of errors makes sense,
+            // should instead define a higher-level error type and propagate those
+            // instead
+            res_f.join(wait_f)
         });
-        let result = core.run(connect_f).unwrap();
-        assert_eq!(result, "TEST".into());
+        let (result_1, result_2) = core.run(connect_f).unwrap();
+        assert_eq!(result_1, "TEST".into());
+        assert_eq!(result_2, "123".into());
     }
 
     #[test]
@@ -158,11 +162,10 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
-            let connection = Arc::new(connection);
-            let inner_connection = connection.clone();
-            connection.send(["INCR", "CTR"].as_ref().into()).and_then(move |value| {
-                inner_connection.send(resp::RespValue::Array(vec!["SET".into(), "LASTCTR".into(), value]))
-            }).map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected"))
+            connection.send(["INCR", "CTR"].as_ref()).and_then(move |value| {
+                let value_str = value.into_string().expect("A string");
+                connection.send(vec!["SET", "LASTCTR", &value_str])
+            })
         });
         let result = core.run(connect_f).unwrap();
         assert_eq!(result, resp::RespValue::SimpleString("OK".into()));
