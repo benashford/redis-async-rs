@@ -146,9 +146,6 @@ mod test {
             let res_f = connection.send(vec!["PING", "TEST"]);
             connection.send(vec!["SET", "X", "123"]);
             let wait_f = connection.send(vec!["GET", "X"]);
-            // TODO - map_err only neccessary to ensure the chain of errors makes sense,
-            // should instead define a higher-level error type and propagate those
-            // instead
             res_f.join(wait_f)
         });
         let (result_1, result_2) = core.run(connect_f).unwrap();
