@@ -1,14 +1,12 @@
 # redis-async
 
-An exercise in learning Tokio and Rust's futures by trying to port [my Clojure/Java Redis client](https://github.com/benashford/redis-async) to rust.
+An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
 ## Releases
 
 None as yet.  Coming soon...
 
-## Progress
-
-Nothing of any significance, more complete examples can be found at:
+## Other clients
 
 * Tokio-Redis - https://github.com/tokio-rs/tokio-redis
 * Redis-RS - https://github.com/mitsuhiko/redis-rs (synchronous, doesn't use Tokio)
@@ -48,6 +46,10 @@ Any future higher-level client should take advantage of the asynchonous nature o
 There are some unresolved questions/design issues/etc. at present:
 
 1. What types should the high-level client support?  The low-level interface transports `resp::RespValue` which represents Redis's serialisation protocol, but hiding this would have value in high-level examples.  However, Redis's "strings" are actually byte arrays, so judicious use of conversion traits might be required to reduce the boilerplate while still allowing the full set of functionality.
+
+## History
+
+Originally this was intended to be a Rust port of [my Clojure/Java Redis client](https://github.com/benashford/redis-async), however significant differences between that model and the Tokio model of doing things, and a desire to remain within idiomatic Rust, meant the design evolved to be quite different.
 
 ## License
 
