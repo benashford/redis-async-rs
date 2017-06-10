@@ -13,7 +13,10 @@ pub enum Error {
     /// A RESP parsing/serialising error occurred
     RESP(String),
 
-    /// An unexpected error, boxed to allow type-erasure
+    /// An unexpected error, boxed to allow type-erasure.  In this context "unexpected" means
+    /// "unexpected because we check ahead of time", it used to maintain the type signature of
+    /// chains of futures; but it occurring at runtime should be considered a catastrophic
+    /// failure.
     Unexpected(Box<error::Error>)
 }
 
