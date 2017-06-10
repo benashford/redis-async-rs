@@ -167,4 +167,23 @@ mod test {
         let result = core.run(connect_f).unwrap();
         assert_eq!(result, resp::RespValue::SimpleString("OK".into()));
     }
+
+    #[test]
+    fn sending_a_lot_of_data_test() {
+        let mut core = Core::new().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let test_f = super::paired_connect(&addr, &core);
+        let send_data = test_f.and_then(|connection| {
+            let mut futures = Vec::with_capacity(1000);
+            for i in 0..1000 {
+                let key = format!("X_{}", i);
+                connection.send(vec!["SET", &key, &i.to_string()]);
+                futures.push(connection.send(vec!["GET", &key]));
+            }
+            futures.remove(999)
+        });
+        let result = core.run(send_data).unwrap();
+        assert_eq!(result.into_string().unwrap(), "999");
+    }
 }
