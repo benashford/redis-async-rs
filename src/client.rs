@@ -90,9 +90,10 @@ impl PairedConnection {
 #[cfg(test)]
 mod test {
     use std::io;
+    use std::rc::Rc;
 
     use futures::{Future, Sink, Stream};
-    use futures::stream;
+    use futures::{future, stream};
 
     use tokio_core::reactor::Core;
 
@@ -185,5 +186,29 @@ mod test {
         });
         let result = core.run(send_data).unwrap();
         assert_eq!(result.into_string().unwrap(), "999");
+    }
+
+    #[test]
+    fn realistic_test() {
+        let test_data_size = 100;
+        let test_data:Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
+        let mut core = Core::new().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let test_f = super::paired_connect(&addr, &core);
+        let send_data = test_f.and_then(|connection| {
+            let connection = Rc::new(connection);
+            let futures:Vec<_> = test_data.into_iter().map(move |data| {
+                let connection_inner = connection.clone();
+                connection.send(vec!["INCR", "realistic_test_ctr"]).and_then(move |ctr| {
+                    let key = format!("rt_{}", ctr.into_string().unwrap());
+                    let d_val = data.0.to_string();
+                    connection_inner.send(vec!["SET", &key, &d_val]);
+                    connection_inner.send(vec!["SET", &data.1, &key])
+                })
+            }).collect();
+            future::join_all(futures)
+        });
+        let result = core.run(send_data).unwrap();
+        assert_eq!(result.len(), 100);
     }
 }
