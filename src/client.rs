@@ -7,7 +7,7 @@ use futures::{Future, Sink, Stream};
 use futures::sync::{mpsc, oneshot};
 
 use tokio_core::net::TcpStream;
-use tokio_core::reactor::Core;
+use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 
 use super::{error, resp};
@@ -17,9 +17,8 @@ const DEFAULT_BUFFER_SIZE:usize = 100;
 
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
-fn connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
-    let handle = core.handle();
-    let client_con = TcpStream::connect(addr, &handle).map(move |socket| {
+fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
+    let client_con = TcpStream::connect(addr, handle).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
         let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
@@ -43,9 +42,9 @@ struct ClientConnection {
     receiver: ClientStream
 }
 
-fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
-    let handle = core.handle();
-    let paired_con = connect(addr, core).map(move |connection| {
+fn paired_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
+    let handle = handle.clone();
+    let paired_con = connect(addr, &handle).map(move |connection| {
         let ClientConnection { sender, receiver } = connection;
         let (out_tx, out_rx) = mpsc::unbounded();
         let sender = out_rx.fold(sender.0, |sender, msg| {
@@ -105,7 +104,7 @@ mod test {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connection = super::connect(&addr, &core).map_err(|e| e.into()).and_then(|connection| {
+        let connection = super::connect(&addr, &core.handle()).map_err(|e| e.into()).and_then(|connection| {
             let a = connection.sender.0.send(["PING", "TEST"].as_ref().into()).map_err(|e| e.into());
             let b = connection.receiver.0.take(1).collect();
             a.join(b)
@@ -120,7 +119,7 @@ mod test {
     fn complex_test() {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
-        let connection = super::connect(&addr, &core).map_err(|e| e.into()).and_then(|connection| {
+        let connection = super::connect(&addr, &core.handle()).map_err(|e| e.into()).and_then(|connection| {
             let mut ops = Vec::<resp::RespValue>::new();
             ops.push(["FLUSH"].as_ref().into());
             ops.extend((0..1000).map(|i| ["SADD", "test_set", &format!("VALUE: {}", i)].as_ref().into()));
@@ -144,7 +143,7 @@ mod test {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
+        let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             let res_f = connection.send(vec!["PING", "TEST"]);
             connection.send(vec!["SET", "X", "123"]);
             let wait_f = connection.send(vec!["GET", "X"]);
@@ -160,7 +159,7 @@ mod test {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connect_f = super::paired_connect(&addr, &core).and_then(|connection| {
+        let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             connection.send(vec!["INCR", "CTR"]).and_then(move |value| {
                 let value_str = value.into_string().expect("A string");
                 connection.send(vec!["SET", "LASTCTR", &value_str])
@@ -175,7 +174,7 @@ mod test {
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let test_f = super::paired_connect(&addr, &core);
+        let test_f = super::paired_connect(&addr, &core.handle());
         let send_data = test_f.and_then(|connection| {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
@@ -195,7 +194,7 @@ mod test {
         let test_data:Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
         let mut core = Core::new().unwrap();
         let addr = "127.0.0.1:6379".parse().unwrap();
-        let test_f = super::paired_connect(&addr, &core);
+        let test_f = super::paired_connect(&addr, &core.handle());
         let send_data = test_f.and_then(|connection| {
             let connection = Rc::new(connection);
             let futures:Vec<_> = test_data.into_iter().map(move |data| {
