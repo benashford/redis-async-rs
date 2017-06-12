@@ -58,6 +58,7 @@ fn paired_connect(addr: &SocketAddr, core: &Core) -> Box<Future<Item=PairedConne
             let dest = queue.pop_front().expect("Queue is empty");
             match dest.send(msg) {
                 Ok(()) => Ok(()),
+                // Ignore error as the channel may have been legitimately closed in the meantime
                 Err(_) => Ok(())
             }
         });
@@ -82,7 +83,7 @@ impl PairedConnection {
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
-        mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Successful send");
+        mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Failed to send");
         Box::new(rx.map_err(|e| e.into()))
     }
 }

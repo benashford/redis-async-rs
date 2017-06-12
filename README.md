@@ -35,6 +35,11 @@ Commands will be sent in the order that `send` is called, regardless of how the 
 
 * Support for PUBSUB
 
+## Questions
+
+* The exact exposed API, will be subject to change.
+* Would it be possible, or would it even make any sense, to wrap and hide the reactor so that this library can be called from applications based on blocking I/O but still take advantage of Tokio for the internals (e.g. implicit pipelining)?
+
 ## History
 
 Originally this was intended to be a Rust port of [my Clojure/Java Redis client](https://github.com/benashford/redis-async), however significant differences between that model and the Tokio model of doing things, and a desire to remain within idiomatic Rust, meant the design evolved to be quite different.
