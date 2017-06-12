@@ -1,9 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::collections::hash_map::Entry;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::{Future, Sink, Stream};
+use futures::future;
 use futures::sync::{mpsc, oneshot};
 
 use tokio_core::net::TcpStream;
@@ -18,7 +20,7 @@ const DEFAULT_BUFFER_SIZE:usize = 100;
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
 fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
-    let client_con = TcpStream::connect(addr, handle).map(move |socket| {
+    TcpStream::connect(addr, handle).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
         let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
@@ -26,8 +28,7 @@ fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConnecti
             sender: ClientSink(Box::new(write_b)),
             receiver: ClientStream(Box::new(read_f))
         }
-    });
-    Box::new(client_con)
+    }).boxed()
 }
 
 /// TODO - is the boxing necessary?  It makes the type signature much simpler
@@ -87,6 +88,87 @@ impl PairedConnection {
     }
 }
 
+fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubConnection, Error=error::Error>> {
+    let handle = handle.clone();
+    let pubsub_con = connect(addr, &handle).map(move |connection| {
+        let ClientConnection { sender, receiver } = connection;
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let sender = out_rx.fold(sender.0, |sender, msg| {
+            sender.send(msg).map_err(|_| ())
+        });
+        let subs = Arc::new(Mutex::new(PubsubSubscriptions {
+            pending: HashMap::new(),
+            confirmed: HashMap::new()
+        }));
+        let subs_reader = subs.clone();
+        let receiver = receiver.0.for_each(move |msg| {
+            // TODO: check message type - and handle accordingly.
+            let (topic, msg) = if let resp::RespValue::Array(mut messages) = msg {
+                assert_eq!(messages.len(), 3);
+                let msg = messages.pop().expect("No message");
+                let topic = messages.pop().expect("No topic");
+                (topic.into_string().expect("Topic should be a string"), msg)
+            } else {
+                panic!("incorrect type");
+            };
+            let subs = subs_reader.lock().expect("Lock is tainted");
+            match subs.confirmed.get(&topic) {
+                Some(txes) => {
+                    let futures:Vec<_> = txes.iter().map(|tx| {
+                        let tx = tx.clone();
+                        tx.send(msg.clone())
+                    }).collect();
+                    future::join_all(futures).map(|_| ()).map_err(|e| e.into()).boxed()
+                }
+                None => future::ok(()).map_err(|_:()| error::internal("unreachable")).boxed()
+            }
+        });
+        handle.spawn(sender.map(|_| ()));
+        handle.spawn(receiver.map_err(|_| ()));
+        PubsubConnection { out_tx: out_tx, subscriptions: subs }
+    }).map_err(|e| e.into());
+    Box::new(pubsub_con)
+}
+
+struct PubsubSubscriptions {
+    pending: HashMap<String, Vec<oneshot::Sender<()>>>,
+    confirmed: HashMap<String, Vec<mpsc::Sender<resp::RespValue>>>
+}
+
+#[derive(Clone)]
+struct PubsubConnection {
+    out_tx: mpsc::UnboundedSender<resp::RespValue>,
+    subscriptions: Arc<Mutex<PubsubSubscriptions>>
+}
+
+impl PubsubConnection {
+    fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=mpsc::Receiver<resp::RespValue>, Error=error::Error>> {
+        // TODO - check arbitrary buffer size
+        let topic = topic.into();
+        let mut subs = self.subscriptions.lock().expect("Lock is tainted");
+        let key = topic.clone();
+        match subs.confirmed.entry(key) {
+            Entry::Occupied(ref mut entry) => {
+                let (tx, rx) = mpsc::channel(10);
+                entry.get_mut().push(tx);
+                return future::ok(rx).map_err(|_:()| error::internal("Unreachable")).boxed()
+            }
+            _ => ()
+        }
+
+        let (tx, rx) = oneshot::channel();
+        subs.pending.entry(topic.clone()).or_insert(vec![]).push(tx);
+        {
+            let subscribe_msg = vec!["SUBSCRIBE", &topic];
+            mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg.into()).expect("Failed to send");
+        }
+        let pubsub_connection = self.clone();
+        Box::new(rx.map_err(|e| e.into()).and_then(move |_| {
+             pubsub_connection.subscribe(topic)
+        }))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::io;
@@ -97,7 +179,7 @@ mod test {
 
     use tokio_core::reactor::Core;
 
-    use super::resp;
+    use super::{error, resp};
 
     #[test]
     fn can_connect() {
@@ -210,5 +292,24 @@ mod test {
         });
         let result = core.run(send_data).unwrap();
         assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn pubsub_test() {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = super::paired_connect(&addr, &handle);
+        let pubsub_c = super::pubsub_connect(&addr, &handle);
+        let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
+            let subscribe = pubsub.subscribe("test-topic");
+            subscribe.and_then(move |msgs| {
+                paired.send(vec!["PUBLISH", "test-topic", "test-message"]).map(|_| msgs)
+            })
+        });
+        let tst = msgs.and_then(|msgs| msgs.take(1).collect().map_err(|_| error::internal("unreachable")));
+        let result = core.run(tst).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "test-message".into());
     }
 }

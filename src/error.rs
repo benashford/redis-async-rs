@@ -1,6 +1,6 @@
 use std::{error, fmt, io};
 
-use futures::sync::oneshot;
+use futures::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum Error {
@@ -20,6 +20,10 @@ pub enum Error {
     Unexpected(Box<error::Error>)
 }
 
+pub fn internal<T: Into<String>>(msg: T) -> Error {
+    Error::Internal(msg.into())
+}
+
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
         Error::IO(err)
@@ -28,6 +32,12 @@ impl From<io::Error> for Error {
 
 impl From<oneshot::Canceled> for Error {
     fn from(err: oneshot::Canceled) -> Error {
+        Error::Unexpected(Box::new(err))
+    }
+}
+
+impl<T: 'static> From<mpsc::SendError<T>> for Error {
+    fn from(err: mpsc::SendError<T>) -> Error {
         Error::Unexpected(Box::new(err))
     }
 }

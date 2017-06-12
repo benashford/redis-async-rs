@@ -20,7 +20,7 @@ impl RespValue {
     pub fn into_string(self) -> Result<String, Error> {
         match self {
             RespValue::Array(_) => Err(Error::RESP("Not stringable".into())),
-            RespValue::BulkString(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
             RespValue::Error(string) => Ok(string),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string)
