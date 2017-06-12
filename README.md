@@ -17,35 +17,23 @@ The primary goal is to teach myself Tokio.  With a longer-term goal of achieving
 
 Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
-## Progress
+## Implementation
 
-At present the function `client::connect` returns a pair of `Sink` and `Stream` which both transport `resp::RespValue`s between client and Redis, these work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).  Working examples of this can be found in the tests in [`client.rs`](src/client.rs).
+### Low-level interface
+
+The function `client::connect` returns a pair of `Sink` and `Stream` which both transport `resp::RespValue`s between client and Redis, these work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).  Working examples of this can be found in the tests in [`client.rs`](src/client.rs).
 
 This is a very low-level API compared to most Redis clients, but is done so intentionally, for two reasons: 1) it is the common demoniator between a functional Redis client (i.e. is able to support all types of requests, including those that block and have streaming responses), and 2) it results in clean `Sink`s and `Stream`s which will be composable with other Tokio-based libraries.
 
+### High-level interface
+
+Working exclusively with such a low-level interface would be time-consuming and error prone.  So we also provide a higher-level API to work with.  `client::paired_connect` is used for most Redis commands (those for which one command returns one response, it's not suitable for PUBSUB or other similar commands).  It allows a Redis command to be sent and a Future returned for each command.
+
+Commands will be sent in the order that `send` is called, regardless of how the future is realised.  This is to allow us to take advantage of Redis's features by implicitly pipelining commands where appropriate.  One side-effect of this is that for many commands, e.g. `SET` we don't need to realise the future at all, it can be assumed to be fire-and-forget; but, the final future of the final command does need to be realised (at least) to ensure that the correct behaviour is observed.
+
 ## Next steps
 
-### A higher-level API
-
-The low-level interface presented by independent `Sink` and `Stream`s is not particularly friendly, although it is very flexible.  I intend to create several higher-level "clients", one for standard one-request-one-response commands (most Redis commands fall into this category); one for one-request-multiple-responses (e.g. the PUBSUB commands); and potentially more as there are a number of commands that do unique things or change the nature of a connection and make it unsuitable for other purposes (e.g. MONITOR).
-
-These higher-level clients will be built upon the existing low-level interface.  But as far as the consuming application is concerned, the details will be hidden.  For example, this should be possible:
-
-```rust
-let set_future = hl_client.set("X", "123");
-let get_future = hl_client.get("X");
-let result = get_future.wait().unwrap(); // Will equal "123"
-```
-
-### Goals
-
-Any future higher-level client should take advantage of the asynchonous nature of the underlying interface.  In practice this means supporting implicit pipelining rather than requiring code to explitely be aware of such things.  Also, the same physical Redis connection should be sharable across threads.
-
-## Questions
-
-There are some unresolved questions/design issues/etc. at present:
-
-1. What types should the high-level client support?  The low-level interface transports `resp::RespValue` which represents Redis's serialisation protocol, but hiding this would have value in high-level examples.  However, Redis's "strings" are actually byte arrays, so judicious use of conversion traits might be required to reduce the boilerplate while still allowing the full set of functionality.
+* Support for PUBSUB
 
 ## History
 
