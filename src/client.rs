@@ -103,24 +103,46 @@ fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubC
         let subs_reader = subs.clone();
         let receiver = receiver.0.for_each(move |msg| {
             // TODO: check message type - and handle accordingly.
-            let (topic, msg) = if let resp::RespValue::Array(mut messages) = msg {
+            let (message_type, topic, msg) = if let resp::RespValue::Array(mut messages) = msg {
                 assert_eq!(messages.len(), 3);
                 let msg = messages.pop().expect("No message");
                 let topic = messages.pop().expect("No topic");
-                (topic.into_string().expect("Topic should be a string"), msg)
+                let message_type = messages.pop().expect("No type");
+                (message_type, topic.into_string().expect("Topic should be a string"), msg)
             } else {
                 panic!("incorrect type");
             };
-            let subs = subs_reader.lock().expect("Lock is tainted");
-            match subs.confirmed.get(&topic) {
-                Some(txes) => {
-                    let futures:Vec<_> = txes.iter().map(|tx| {
-                        let tx = tx.clone();
-                        tx.send(msg.clone())
-                    }).collect();
-                    future::join_all(futures).map(|_| ()).map_err(|e| e.into()).boxed()
+            let mut subs = subs_reader.lock().expect("Lock is tainted");
+            if let resp::RespValue::BulkString(ref bytes) = message_type {
+                if bytes == b"subscribe" {
+                    if let Some(pending) = subs.pending.remove(&topic) {
+                        let mut txes = Vec::with_capacity(pending.len());
+                        let mut futures = Vec::with_capacity(pending.len());
+                        for (tx, notification_tx) in pending {
+                            txes.push(tx);
+                            futures.push(notification_tx.send(()));
+                        }
+                        subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
+                        future::join_all(futures).map(|_| ()).map_err(|_| error::internal("unreachable")).boxed()
+                    } else {
+                        future::ok(()).map_err(|_:()| error::internal("unreachable")).boxed()
+                    }
+                } else if bytes == b"message" {
+                    match subs.confirmed.get(&topic) {
+                        Some(txes) => {
+                            let futures:Vec<_> = txes.iter().map(|tx| {
+                                let tx = tx.clone();
+                                tx.send(msg.clone())
+                            }).collect();
+                            future::join_all(futures).map(|_| ()).map_err(|e| e.into()).boxed()
+                        }
+                        None => future::ok(()).map_err(|_:()| error::internal("unreachable")).boxed()
+                    }
+                } else {
+                    panic!("Unexpected bytes: {:?}", bytes);
                 }
-                None => future::ok(()).map_err(|_:()| error::internal("unreachable")).boxed()
+            } else {
+                panic!("Message format error: {:?}", message_type);
             }
         });
         handle.spawn(sender.map(|_| ()));
@@ -131,7 +153,7 @@ fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubC
 }
 
 struct PubsubSubscriptions {
-    pending: HashMap<String, Vec<oneshot::Sender<()>>>,
+    pending: HashMap<String, Vec<(mpsc::Sender<resp::RespValue>, oneshot::Sender<()>)>>,
     confirmed: HashMap<String, Vec<mpsc::Sender<resp::RespValue>>>
 }
 
@@ -142,30 +164,26 @@ struct PubsubConnection {
 }
 
 impl PubsubConnection {
-    fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=mpsc::Receiver<resp::RespValue>, Error=error::Error>> {
-        // TODO - check arbitrary buffer size
+    fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=Box<Stream<Item=resp::RespValue, Error=()>>, Error=error::Error>> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
         let key = topic.clone();
-        match subs.confirmed.entry(key) {
-            Entry::Occupied(ref mut entry) => {
-                let (tx, rx) = mpsc::channel(10);
-                entry.get_mut().push(tx);
-                return future::ok(rx).map_err(|_:()| error::internal("Unreachable")).boxed()
-            }
-            _ => ()
+        // TODO - check arbitrary buffer size
+        let (tx, rx) = mpsc::channel(10);
+        let stream = Box::new(rx) as Box<Stream<Item=resp::RespValue, Error=()>>;
+        if let Entry::Occupied(ref mut entry) = subs.confirmed.entry(key) {
+            entry.get_mut().push(tx);
+            return Box::new(future::ok(stream))
         }
 
-        let (tx, rx) = oneshot::channel();
-        subs.pending.entry(topic.clone()).or_insert(vec![]).push(tx);
+        let (notification_tx, notification_rx) = oneshot::channel();
+        subs.pending.entry(topic.clone()).or_insert(Vec::new()).push((tx, notification_tx));
         {
             let subscribe_msg = vec!["SUBSCRIBE", &topic];
             mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg.into()).expect("Failed to send");
         }
-        let pubsub_connection = self.clone();
-        Box::new(rx.map_err(|e| e.into()).and_then(move |_| {
-             pubsub_connection.subscribe(topic)
-        }))
+        let done = notification_rx.map(|_| stream).map_err(|e| e.into());
+        Box::new(done)
     }
 }
 
@@ -304,12 +322,15 @@ mod test {
         let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
             let subscribe = pubsub.subscribe("test-topic");
             subscribe.and_then(move |msgs| {
-                paired.send(vec!["PUBLISH", "test-topic", "test-message"]).map(|_| msgs)
+                paired.send(vec!["PUBLISH", "test-topic", "test-message"]);
+                paired.send(vec!["PUBLISH", "test-not-topic", "test-message-1.5"]);
+                paired.send(vec!["PUBLISH", "test-topic", "test-message2"]).map(|_| msgs)
             })
         });
-        let tst = msgs.and_then(|msgs| msgs.take(1).collect().map_err(|_| error::internal("unreachable")));
+        let tst = msgs.and_then(|msgs| msgs.take(2).collect().map_err(|_| error::internal("unreachable")));
         let result = core.run(tst).unwrap();
-        assert_eq!(result.len(), 1);
+        assert_eq!(result.len(), 2);
         assert_eq!(result[0], "test-message".into());
+        assert_eq!(result[1], "test-message2".into());
     }
 }
