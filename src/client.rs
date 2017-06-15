@@ -178,10 +178,10 @@ impl PubsubConnection {
 
         let (notification_tx, notification_rx) = oneshot::channel();
         subs.pending.entry(topic.clone()).or_insert(Vec::new()).push((tx, notification_tx));
-        {
-            let subscribe_msg = vec!["SUBSCRIBE", &topic];
-            mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg.into()).expect("Failed to send");
-        }
+
+        let subscribe_msg = vec!["SUBSCRIBE", &topic];
+        mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg.into()).expect("Failed to send");
+
         let done = notification_rx.map(|_| stream).map_err(|e| e.into());
         Box::new(done)
     }
