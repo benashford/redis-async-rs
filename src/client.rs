@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::collections::hash_map::Entry;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -167,20 +166,19 @@ impl PubsubConnection {
     fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=Box<Stream<Item=resp::RespValue, Error=()>>, Error=error::Error>> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
-        let key = topic.clone();
+
         // TODO - check arbitrary buffer size
         let (tx, rx) = mpsc::channel(10);
         let stream = Box::new(rx) as Box<Stream<Item=resp::RespValue, Error=()>>;
-        if let Entry::Occupied(ref mut entry) = subs.confirmed.entry(key) {
-            entry.get_mut().push(tx);
+        if let Some(ref mut entry) = subs.confirmed.get_mut(&topic) {
+            entry.push(tx);
             return Box::new(future::ok(stream))
         }
 
         let (notification_tx, notification_rx) = oneshot::channel();
-        subs.pending.entry(topic.clone()).or_insert(Vec::new()).push((tx, notification_tx));
-
-        let subscribe_msg = vec!["SUBSCRIBE", &topic];
-        mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg.into()).expect("Failed to send");
+        let subscribe_msg = vec!["SUBSCRIBE", &topic].into();
+        subs.pending.entry(topic).or_insert(Vec::new()).push((tx, notification_tx));
+        mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg).expect("Failed to send");
 
         let done = notification_rx.map(|_| stream).map_err(|e| e.into());
         Box::new(done)
