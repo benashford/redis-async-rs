@@ -1,5 +1,7 @@
 # redis-async
 
+[![Build Status](https://travis-ci.org/benashford/redis-async-rs.svg?branch=master)](https://travis-ci.org/benashford/redis-async-rs)
+
 An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
 ## Releases

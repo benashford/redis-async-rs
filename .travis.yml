@@ -1,5 +1,6 @@
 language: rust
-
+services:
+  - redis-server
 rust:
   - stable
   - beta
