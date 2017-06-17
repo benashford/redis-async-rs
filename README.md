@@ -33,9 +33,15 @@ Working exclusively with such a low-level interface would be time-consuming and 
 
 Commands will be sent in the order that `send` is called, regardless of how the future is realised.  This is to allow us to take advantage of Redis's features by implicitly pipelining commands where appropriate.  One side-effect of this is that for many commands, e.g. `SET` we don't need to realise the future at all, it can be assumed to be fire-and-forget; but, the final future of the final command does need to be realised (at least) to ensure that the correct behaviour is observed.
 
+### PUBSUB
+
+PUBSUB in Redis works differently.  A connection will subscribe to one or more topics, then receive all messages that are published to that topic.  As such the single-request/single-response model of `paired_connect` will not work.  A specific `client::pubsub_connect` is provided for this purpose.
+
+It returns a future which resolves to a `PubsubConnection`, this provides a `subscribe` function that takes a topic as a parameter and returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published to that topic.
+
 ## Next steps
 
-* Support for PUBSUB
+* Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
 
 ## Questions
 
