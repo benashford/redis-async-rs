@@ -18,7 +18,7 @@ const DEFAULT_BUFFER_SIZE:usize = 100;
 
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
-fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
+pub fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConnection, Error=io::Error>> {
     TcpStream::connect(addr, handle).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
@@ -37,12 +37,12 @@ struct ClientStream(Box<Stream<Item=resp::RespValue, Error=error::Error>>);
 /// A low-level client connection representing a sender and a receiver.
 ///
 /// The two halves operate independently from one another
-struct ClientConnection {
+pub struct ClientConnection {
     sender: ClientSink,
     receiver: ClientStream
 }
 
-fn paired_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
+pub fn paired_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
     let handle = handle.clone();
     let paired_con = connect(addr, &handle).map(move |connection| {
         let ClientConnection { sender, receiver } = connection;
@@ -71,14 +71,15 @@ fn paired_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PairedC
     Box::new(paired_con)
 }
 
-struct PairedConnection {
+pub struct PairedConnection {
     out_tx: mpsc::UnboundedSender<resp::RespValue>,
     resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>
 }
 
 impl PairedConnection {
-    fn send<R>(&self, msg: R) -> Box<Future<Item=resp::RespValue, Error=error::Error>>
-    where R: Into<resp::RespValue> {
+    pub fn send<R>(&self, msg: R) -> Box<Future<Item=resp::RespValue, Error=error::Error>>
+        where R: Into<resp::RespValue> {
+
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
@@ -87,7 +88,7 @@ impl PairedConnection {
     }
 }
 
-fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubConnection, Error=error::Error>> {
+pub fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubConnection, Error=error::Error>> {
     let handle = handle.clone();
     let pubsub_con = connect(addr, &handle).map(move |connection| {
         let ClientConnection { sender, receiver } = connection;
@@ -157,13 +158,13 @@ struct PubsubSubscriptions {
 }
 
 #[derive(Clone)]
-struct PubsubConnection {
+pub struct PubsubConnection {
     out_tx: mpsc::UnboundedSender<resp::RespValue>,
     subscriptions: Arc<Mutex<PubsubSubscriptions>>
 }
 
 impl PubsubConnection {
-    fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=Box<Stream<Item=resp::RespValue, Error=()>>, Error=error::Error>> {
+    pub fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=Box<Stream<Item=resp::RespValue, Error=()>>, Error=error::Error>> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
 

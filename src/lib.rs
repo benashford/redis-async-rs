@@ -3,6 +3,6 @@ extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 
-mod client;
-mod error;
-mod resp;
+pub mod client;
+pub mod error;
+pub mod resp;

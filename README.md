@@ -39,6 +39,8 @@ PUBSUB in Redis works differently.  A connection will subscribe to one or more t
 
 It returns a future which resolves to a `PubsubConnection`, this provides a `subscribe` function that takes a topic as a parameter and returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published to that topic.
 
+See an [example](examples/pubsub.rs).
+
 ## Next steps
 
 * Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
