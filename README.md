@@ -6,12 +6,14 @@ An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
 ## Releases
 
-None as yet.  Coming soon...
+A very early initial proof-of-concept is coming soon, but the API is still subject to change as not all edge-cases have been worked through yet.
 
 ## Other clients
 
-* Tokio-Redis - https://github.com/tokio-rs/tokio-redis
-* Redis-RS - https://github.com/mitsuhiko/redis-rs (synchronous, doesn't use Tokio)
+There are a number of pre-existing Redis clients for Rust, two of particular interest are:
+
+* Tokio-Redis - https://github.com/tokio-rs/tokio-redis - written as a demo of Tokio, by Tokio developers
+* Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio
 
 ## Why a new Redis client?
 
