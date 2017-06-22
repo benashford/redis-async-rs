@@ -49,7 +49,10 @@ See an [example](examples/pubsub.rs).  This will listen on a topic (by default: 
 
 ## Next steps
 
+* Separate tests from examples
 * Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
+* Test all Redis commands
+* Ensure all edge-cases are complete (e.g. Redis commands that return sets, nil, etc.)
 
 ## Questions
 
