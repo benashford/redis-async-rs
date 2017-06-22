@@ -10,7 +10,7 @@ An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
 ## Releases
 
-A very early initial proof-of-concept is coming soon, but the API is still subject to change as not all edge-cases have been worked through yet.
+A very early initial proof-of-concept, but the API is still subject to change as not all edge-cases have been worked through yet.
 
 ## Other clients
 
