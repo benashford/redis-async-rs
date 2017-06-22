@@ -1,6 +1,10 @@
 # redis-async
 
 [![Build Status](https://travis-ci.org/benashford/redis-async-rs.svg?branch=master)](https://travis-ci.org/benashford/redis-async-rs)
+[![](http://meritbadge.herokuapp.com/redis-async)](https://crates.io/crates/redis-async)
+[![](https://img.shields.io/crates/d/redis-async.svg)](https://crates.io/crates/redis-async)
+[![](https://img.shields.io/crates/dv/redis-async.svg)](https://crates.io/crates/redis-async)
+[![](https://docs.rs/redis-async/badge.svg)](https://docs.rs/redis-async/)
 
 An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
