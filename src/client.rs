@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford developers
+ * Copyright 2017 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,6 +7,18 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
+
+//! The client API itself.
+//!
+//! This contains three main functions that return three specific types of client:
+//!
+//! * `connect` returns a pair of `Stream` and `Sink`, clients can write RESP messages to the
+//! `Sink` and read RESP messages from the `Stream`. Pairing requests to responses is up to the
+//! client.  This is intended to be a low-level interface from which more user-friendly interfaces
+//! can be built.
+//! * `paired_connect` is used for most of the standard Redis commands, where one request results
+//! in one response.
+//! * `pubsub_connect` is used for Redis's PUBSUB functionality.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -40,9 +52,9 @@ pub fn connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=ClientConn
     }).boxed()
 }
 
-/// TODO - is the boxing necessary?  It makes the type signature much simpler
-struct ClientSink(Box<Sink<SinkItem=resp::RespValue, SinkError=io::Error>>);
-struct ClientStream(Box<Stream<Item=resp::RespValue, Error=error::Error>>);
+// TODO - is the boxing necessary?  It makes the type signature much simpler
+pub struct ClientSink(Box<Sink<SinkItem=resp::RespValue, SinkError=io::Error>>);
+pub struct ClientStream(Box<Stream<Item=resp::RespValue, Error=error::Error>>);
 
 /// A low-level client connection representing a sender and a receiver.
 ///
@@ -52,6 +64,9 @@ pub struct ClientConnection {
     receiver: ClientStream
 }
 
+/// The default starting point to use most default Redis functionality.
+///
+/// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PairedConnection, Error=error::Error>> {
     let handle = handle.clone();
     let paired_con = connect(addr, &handle).map(move |connection| {
@@ -87,6 +102,15 @@ pub struct PairedConnection {
 }
 
 impl PairedConnection {
+    /// Sends a command to Redis.
+    ///
+    /// The message must be in the format of a single RESP message (or a format for which a
+    /// conversion trait is defined).  Returned is a future that resolves to a RESP message
+    /// containing the result.
+    ///
+    /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
+    /// future is realised.  As such, it is guaranteed that messages are sent in the same order
+    /// that `send` is called.
     pub fn send<R>(&self, msg: R) -> Box<Future<Item=resp::RespValue, Error=error::Error>>
         where R: Into<resp::RespValue> {
 
@@ -98,6 +122,9 @@ impl PairedConnection {
     }
 }
 
+/// Used for Redis's PUBSUB functionality.
+///
+/// Returns a future that resolves to a `PubsubConnection`.
 pub fn pubsub_connect(addr: &SocketAddr, handle: &Handle) -> Box<Future<Item=PubsubConnection, Error=error::Error>> {
     let handle = handle.clone();
     let pubsub_con = connect(addr, &handle).map(move |connection| {
@@ -174,6 +201,10 @@ pub struct PubsubConnection {
 }
 
 impl PubsubConnection {
+    /// Subscribes to a particular PUBSUB topic.
+    ///
+    /// Returns a future that resolves to a `Stream` that contains all the messages published on
+    /// that particular topic.
     pub fn subscribe<T: Into<String>>(&self, topic: T) -> Box<Future<Item=Box<Stream<Item=resp::RespValue, Error=()>>, Error=error::Error>> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
