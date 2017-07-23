@@ -27,7 +27,7 @@ pub enum Error {
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
     /// failure.
-    Unexpected(Box<error::Error>)
+    Unexpected(Box<error::Error>),
 }
 
 pub fn internal<T: Into<String>>(msg: T) -> Error {
@@ -58,7 +58,7 @@ impl error::Error for Error {
             Error::Internal(ref s) => s,
             Error::IO(ref err) => err.description(),
             Error::RESP(ref s) => s,
-            Error::Unexpected(ref err) => err.description()
+            Error::Unexpected(ref err) => err.description(),
         }
     }
 
@@ -67,7 +67,7 @@ impl error::Error for Error {
             Error::Internal(_) => None,
             Error::IO(ref err) => Some(err),
             Error::RESP(_) => None,
-            Error::Unexpected(ref err) => Some(err.as_ref())
+            Error::Unexpected(ref err) => Some(err.as_ref()),
         }
     }
 }

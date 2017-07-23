@@ -25,7 +25,7 @@ pub enum RespValue {
     BulkString(Vec<u8>),
     Error(String),
     Integer(usize),
-    SimpleString(String)
+    SimpleString(String),
 }
 
 impl RespValue {
@@ -35,7 +35,7 @@ impl RespValue {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
             RespValue::Error(string) => Ok(string),
             RespValue::Integer(i) => Ok(i.to_string()),
-            RespValue::SimpleString(string) => Ok(string)
+            RespValue::SimpleString(string) => Ok(string),
         }
     }
 }
@@ -63,7 +63,8 @@ impl<'a> ToResp for String {
 }
 
 impl<'a, T> ToResp for Vec<T>
-where T: ToResp {
+    where T: ToResp
+{
     fn to_resp(&self) -> RespValue {
         RespValue::Array(self.into_iter().map(|v| v.to_resp()).collect())
     }
@@ -161,13 +162,13 @@ fn scan_integer<'a>(buf: &'a mut BytesMut, idx: usize) -> Result<Option<(usize, 
     let mut pos = idx;
     loop {
         if length <= pos {
-            return Ok(None)
+            return Ok(None);
         }
         match (at_end, buf[pos]) {
             (true, b'\n') => return Ok(Some((pos + 1, &buf[idx..pos - 1]))),
-            (false, b'\r') => { at_end = true },
+            (false, b'\r') => at_end = true,
             (false, b'0'...b'9') => (),
-            (_, val) => return Err(parse_error(format!("Unexpected byte in size_string: {}", val)))
+            (_, val) => return Err(parse_error(format!("Unexpected byte in size_string: {}", val))),
         }
         pos += 1;
     }
@@ -179,16 +180,16 @@ fn scan_string(buf: &mut BytesMut, idx: usize) -> Option<(usize, String)> {
     let mut pos = idx;
     loop {
         if length <= pos {
-            return None
+            return None;
         }
         match (at_end, buf[pos]) {
             (true, b'\n') => {
                 let value = String::from_utf8_lossy(&buf[idx..pos - 1]).into_owned();
                 return Some((pos + 1, value));
-            },
-            (true, _) => { at_end = false },
-            (false, b'\r') => { at_end = true },
-            (false, _) => ()
+            }
+            (true, _) => at_end = false,
+            (false, b'\r') => at_end = true,
+            (false, _) => (),
         }
         pos += 1;
     }
@@ -198,10 +199,13 @@ fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, u
     match scan_integer(buf, idx) {
         Ok(None) => Ok(None),
         Ok(Some((pos, int_str))) => {
-            let int:usize = str::from_utf8(int_str).expect("Not a string").parse().expect("Not an integer");
+            let int: usize = str::from_utf8(int_str)
+                .expect("Not a string")
+                .parse()
+                .expect("Not an integer");
             Ok(Some((pos, int)))
-        },
-        Err(e) => Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -215,13 +219,13 @@ fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
             let required_bytes = size + 2;
 
             if remaining < required_bytes {
-                return Ok(None)
+                return Ok(None);
             }
 
             let bulk_string = RespValue::BulkString(buf[pos..(pos + size)].to_vec());
             Ok(Some((pos + required_bytes, bulk_string)))
         }
-        Err(e) => Err(e)
+        Err(e) => Err(e),
     }
 }
 
@@ -237,23 +241,21 @@ fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
                     Ok(Some((new_pos, value))) => {
                         values.push(value);
                         pos = new_pos;
-                    },
-                    Err(e) => return Err(e)
+                    }
+                    Err(e) => return Err(e),
                 }
             }
             Ok(Some((pos, RespValue::Array(values))))
-        },
-        Err(e) => Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 
 fn decode_integer(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
-        Ok(Some((pos, int))) => {
-            Ok(Some((pos, RespValue::Integer(int))))
-        },
-        Err(e) => Err(e)
+        Ok(Some((pos, int))) => Ok(Some((pos, RespValue::Integer(int)))),
+        Err(e) => Err(e),
     }
 }
 
@@ -261,21 +263,21 @@ fn decode_integer(buf: &mut BytesMut, idx: usize) -> DecodeResult {
 fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
-        Some((pos, string)) => Ok(Some((pos, RespValue::SimpleString(string))))
+        Some((pos, string)) => Ok(Some((pos, RespValue::SimpleString(string)))),
     }
 }
 
 fn decode_error(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
-        Some((pos, string)) => Ok(Some((pos, RespValue::Error(string))))
+        Some((pos, string)) => Ok(Some((pos, RespValue::Error(string)))),
     }
 }
 
 fn decode(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     let length = buf.len();
     if length <= idx {
-        return Ok(None)
+        return Ok(None);
     }
 
     let first_byte = buf[idx];
@@ -285,7 +287,7 @@ fn decode(buf: &mut BytesMut, idx: usize) -> DecodeResult {
         b':' => decode_integer(buf, idx + 1),
         b'+' => decode_simple_string(buf, idx + 1),
         b'-' => decode_error(buf, idx + 1),
-        _ => Err(parse_error(format!("Unexpected byte: {}", first_byte)))
+        _ => Err(parse_error(format!("Unexpected byte: {}", first_byte))),
     }
 }
 
@@ -299,8 +301,8 @@ impl Decoder for RespCodec {
             Ok(Some((pos, item))) => {
                 buf.split_to(pos);
                 Ok(Some(item))
-            },
-            Err(e) => Err(e)
+            }
+            Err(e) => Err(e),
         }
     }
 }
@@ -331,7 +333,8 @@ mod tests {
         let mut bytes = BytesMut::new();
         let mut codec = RespCodec;
         codec.encode(resp_object.clone(), &mut bytes).unwrap();
-        assert_eq!(b"*2\r\n$5\r\nTEST1\r\n$5\r\nTEST2\r\n".to_vec(), bytes.to_vec());
+        assert_eq!(b"*2\r\n$5\r\nTEST1\r\n$5\r\nTEST2\r\n".to_vec(),
+                   bytes.to_vec());
 
         let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
         assert_eq!(deserialized, resp_object);
