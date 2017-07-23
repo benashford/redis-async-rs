@@ -5,6 +5,7 @@
 [![](https://img.shields.io/crates/d/redis-async.svg)](https://crates.io/crates/redis-async)
 [![](https://img.shields.io/crates/dv/redis-async.svg)](https://crates.io/crates/redis-async)
 [![](https://docs.rs/redis-async/badge.svg)](https://docs.rs/redis-async/)
+[![Dependency Status](https://dependencyci.com/github/benashford/redis-async-rs/badge)](https://dependencyci.com/github/benashford/redis-async-rs)
 
 An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
