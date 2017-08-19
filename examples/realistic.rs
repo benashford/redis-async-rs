@@ -24,7 +24,7 @@ use redis_async::client;
 // An artificial "realistic" non-trivial example to demonstrate usage
 fn main() {
     // Create some completely arbitrary "test data"
-    let test_data_size = 100;
+    let test_data_size = 10;
     let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
 
     let mut core = Core::new().unwrap();
@@ -57,5 +57,5 @@ fn main() {
     });
 
     let result = core.run(send_data).unwrap();
-    assert_eq!(result.len(), 100);
+    assert_eq!(result.len(), test_data_size);
 }
