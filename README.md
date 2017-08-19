@@ -11,7 +11,7 @@ An exercise in learning Tokio and Rust's futures by creating a Redis client.
 
 ## Releases
 
-A very early initial proof-of-concept, but the API is still subject to change as not all edge-cases have been worked through yet.
+The API is currently low-level and still subject to change as not all edge-cases have been worked through yet.
 
 ## Other clients
 
@@ -26,13 +26,21 @@ The primary goal is to teach myself Tokio.  With a longer-term goal of achieving
 
 Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
-## Implementation
+## Usage
+
+There are three functions in `redis_async::client` which provide functionality.  One is a low-level interface, a second is a high-level interface, the third is dedicated to PUBSUB functionality.
 
 ### Low-level interface
 
-The function `client::connect` returns a pair of `Sink` and `Stream` which both transport `resp::RespValue`s between client and Redis, these work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).  Working examples of this can be found in the tests in [`client.rs`](src/client.rs).
+The function `client::connect` returns a pair of `Sink` and `Stream` which both transport `resp::RespValue`s between client and Redis, these work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).
 
 This is a very low-level API compared to most Redis clients, but is done so intentionally, for two reasons: 1) it is the common demoniator between a functional Redis client (i.e. is able to support all types of requests, including those that block and have streaming responses), and 2) it results in clean `Sink`s and `Stream`s which will be composable with other Tokio-based libraries.
+
+For most practical purposes this low-level interface will not be used, the only exception possibly being the [`MONITOR`](https://redis.io/commands/monitor) command.
+
+#### Example
+
+An example of this low-level interface is in [`examples/monitor.rs`](examples/monitor.rs).  This can be run with `cargo run --example monitor`, it will run until it is `Ctrl-C`'d and will show every command run against the Redis server.
 
 ### High-level interface
 

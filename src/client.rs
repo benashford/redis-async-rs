@@ -57,15 +57,16 @@ pub fn connect(addr: &SocketAddr,
 }
 
 // TODO - is the boxing necessary?  It makes the type signature much simpler
-pub struct ClientSink(Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error>>);
-pub struct ClientStream(Box<Stream<Item = resp::RespValue, Error = error::Error>>);
+// TODO - remove these structs entirely and inline in ClientConnection
+pub struct ClientSink(pub Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error>>);
+pub struct ClientStream(pub Box<Stream<Item = resp::RespValue, Error = error::Error>>);
 
 /// A low-level client connection representing a sender and a receiver.
 ///
 /// The two halves operate independently from one another
 pub struct ClientConnection {
-    sender: ClientSink,
-    receiver: ClientStream,
+    pub sender: ClientSink,
+    pub receiver: ClientStream,
 }
 
 /// The default starting point to use most default Redis functionality.
