@@ -389,10 +389,15 @@ mod test {
     #[test]
     fn realistic_test() {
         let test_data_size = 100;
+
+        // Create some completely arbitrary fake "test data"
         let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
+
         let mut core = Core::new().unwrap();
+
         let addr = "127.0.0.1:6379".parse().unwrap();
         let test_f = super::paired_connect(&addr, &core.handle());
+
         let send_data = test_f.and_then(|connection| {
             let connection = Rc::new(connection);
             let futures: Vec<_> = test_data
@@ -411,6 +416,7 @@ mod test {
                 .collect();
             future::join_all(futures)
         });
+
         let result = core.run(send_data).unwrap();
         assert_eq!(result.len(), 100);
     }
