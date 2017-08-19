@@ -44,9 +44,75 @@ An example of this low-level interface is in [`examples/monitor.rs`](examples/mo
 
 ### High-level interface
 
-Working exclusively with such a low-level interface would be time-consuming and error prone.  So we also provide a higher-level API to work with.  `client::paired_connect` is used for most Redis commands (those for which one command returns one response, it's not suitable for PUBSUB or other similar commands).  It allows a Redis command to be sent and a Future returned for each command.
+`client::paired_connect` is used for most Redis commands (those for which one command returns one response, it's not suitable for PUBSUB, `MONITOR` or other similar commands).  It allows a Redis command to be sent and a Future returned for each command.
 
 Commands will be sent in the order that `send` is called, regardless of how the future is realised.  This is to allow us to take advantage of Redis's features by implicitly pipelining commands where appropriate.  One side-effect of this is that for many commands, e.g. `SET` we don't need to realise the future at all, it can be assumed to be fire-and-forget; but, the final future of the final command does need to be realised (at least) to ensure that the correct behaviour is observed.
+
+#### Example
+
+See [`examples/realistic.rs`](examples/realistic.rs) for an example using completely artificial test data, it is realistic in the sense that it simulates a real-world pattern where certain operations depend on the results of others.
+
+This shows that the code can be written in a straight line fashion - iterate through the outer-loop, for each make a call to `INCR` a value and use the result to write the data to a unique key.  But when run, the various calls will be pipelined.
+
+In order to test this, a tool like ngrep can be used to monitor the data sent to Redis, so running `cargo run --release --example realistic` (the `--release` flag needs to be set for the buffers to fill faster than packets can be sent to the Redis server) shows the data flowing:
+
+```
+interface: lo0 (127.0.0.0/255.0.0.0)
+filter: (ip or ip6) and ( port 6379 )
+#####
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *2..$4..INCR..$18..realistic_test_ctr..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18.
+  .realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ct
+  r..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$
+  18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..
+##
+T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
+  :3151..
+##
+T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
+  :3152..:3153..:3154..:3155..:3156..:3157..:3158..:3159..:3160..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$7..rt_3151..$1..0..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$1..0..$7..rt_3151..*3..$3..SET..$7..rt_3152..$1..1..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$1..1..$7..rt_3152..*3..$3..SET..$7..rt_3153..$1..2..*3..$3..SET..$1..2..$7..rt_315
+  3..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$7..rt_3154..$1..3..*3..$3..SET..$1..3..$7..rt_3154..*3..$3..SET..$7..rt_3155..$1..
+  4..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$1..4..$7..rt_3155..*3..$3..SET..$7..rt_3156..$1..5..*3..$3..SET..$1..5..$7..rt_315
+  6..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$7..rt_3157..$1..6..*3..$3..SET..$1..6..$7..rt_3157..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$7..rt_3158..$1..7..*3..$3..SET..$1..7..$7..rt_3158..*3..$3..SET..$7..rt_3159..$1..
+  8..
+#
+T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
+  +OK..+OK..+OK..+OK..+OK..+OK..
+##
+T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$1..8..$7..rt_3159..*3..$3..SET..$7..rt_3160..$1..9..*3..$3..SET..$1..9..$7..rt_316
+  0..
+##
+T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
+  +OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..
+##
+T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
+  +OK..+OK..+OK..
+```
 
 ### PUBSUB
 
@@ -54,19 +120,16 @@ PUBSUB in Redis works differently.  A connection will subscribe to one or more t
 
 It returns a future which resolves to a `PubsubConnection`, this provides a `subscribe` function that takes a topic as a parameter and returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published to that topic.
 
-See an [example](examples/pubsub.rs).  This will listen on a topic (by default: `test-topic`) and print each message as it arrives.  To run this example: `cargo run --example pubsub` then in a separate terminal open `redis-cli` to the same server and publish some messages (e.g. `PUBLISH test-topic TESTING`).
+#### Example
+
+See an [`examples/pubsub.rs`](examples/pubsub.rs).  This will listen on a topic (by default: `test-topic`) and print each message as it arrives.  To run this example: `cargo run --example pubsub` then in a separate terminal open `redis-cli` to the same server and publish some messages (e.g. `PUBLISH test-topic TESTING`).
 
 ## Next steps
 
-* Separate tests from examples
+* Better documentation
 * Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
 * Test all Redis commands
 * Ensure all edge-cases are complete (e.g. Redis commands that return sets, nil, etc.)
-
-## Questions
-
-* The exact exposed API, will be subject to change.
-* Would it be possible, or would it even make any sense, to wrap and hide the reactor so that this library can be called from applications based on blocking I/O but still take advantage of Tokio for the internals (e.g. implicit pipelining)?
 
 ## History
 

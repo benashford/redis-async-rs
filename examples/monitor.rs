@@ -20,7 +20,6 @@ use tokio_core::reactor::Core;
 
 use redis_async::client;
 
-// An artificial "realistic" non-trivial example to demonstrate usage
 fn main() {
     let mut core = Core::new().unwrap();
 
