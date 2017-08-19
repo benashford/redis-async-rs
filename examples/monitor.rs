@@ -31,17 +31,13 @@ fn main() {
 
     let monitor = client::connect(&addr, &core.handle()).map_err(|e| e.into()).and_then(|connection| {
         let client::ClientConnection { sender, receiver } = connection;
-        sender
-            .0
-            .send(["MONITOR"].as_ref().into())
+        sender.send(["MONITOR"].as_ref().into())
             .map_err(|e| e.into())
             .and_then(move |_| {
-                          receiver
-                              .0
-                              .for_each(|incoming| {
-                                            println!("{:?}", incoming);
-                                            future::ok(())
-                                        })
+                          receiver.for_each(|incoming| {
+                                              println!("{:?}", incoming);
+                                              future::ok(())
+                                            })
                       })
     });
 

@@ -49,24 +49,20 @@ pub fn connect(addr: &SocketAddr,
             let (write_f, read_f) = framed.split();
             let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
             ClientConnection {
-                sender: ClientSink(Box::new(write_b)),
-                receiver: ClientStream(Box::new(read_f)),
+                sender: Box::new(write_b),
+                receiver: Box::new(read_f),
             }
         })
         .boxed()
 }
 
 // TODO - is the boxing necessary?  It makes the type signature much simpler
-// TODO - remove these structs entirely and inline in ClientConnection
-pub struct ClientSink(pub Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error>>);
-pub struct ClientStream(pub Box<Stream<Item = resp::RespValue, Error = error::Error>>);
-
 /// A low-level client connection representing a sender and a receiver.
 ///
 /// The two halves operate independently from one another
 pub struct ClientConnection {
-    pub sender: ClientSink,
-    pub receiver: ClientStream,
+    pub sender: Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error>>,
+    pub receiver: Box<Stream<Item = resp::RespValue, Error = error::Error>>,
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -80,11 +76,11 @@ pub fn paired_connect(addr: &SocketAddr,
         .map(move |connection| {
             let ClientConnection { sender, receiver } = connection;
             let (out_tx, out_rx) = mpsc::unbounded();
-            let sender = out_rx.fold(sender.0, |sender, msg| sender.send(msg).map_err(|_| ()));
+            let sender = out_rx.fold(sender, |sender, msg| sender.send(msg).map_err(|_| ()));
             let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
                 Arc::new(Mutex::new(VecDeque::new()));
             let receiver_queue = resp_queue.clone();
-            let receiver = receiver.0.for_each(move |msg| {
+            let receiver = receiver.for_each(move |msg| {
             let mut queue = receiver_queue.lock().expect("Lock is tainted");
             let dest = queue.pop_front().expect("Queue is empty");
             match dest.send(msg) {
@@ -142,75 +138,71 @@ pub fn pubsub_connect(addr: &SocketAddr,
         .map(move |connection| {
             let ClientConnection { sender, receiver } = connection;
             let (out_tx, out_rx) = mpsc::unbounded();
-            let sender = out_rx.fold(sender.0, |sender, msg| sender.send(msg).map_err(|_| ()));
+            let sender = out_rx.fold(sender, |sender, msg| sender.send(msg).map_err(|_| ()));
             let subs = Arc::new(Mutex::new(PubsubSubscriptions {
                                                pending: HashMap::new(),
                                                confirmed: HashMap::new(),
                                            }));
             let subs_reader = subs.clone();
-            let receiver = receiver
-                .0
-                .for_each(move |msg| {
-                    // TODO: check message type - and handle accordingly.
-                    let (message_type, topic, msg) =
-                        if let resp::RespValue::Array(mut messages) = msg {
-                            assert_eq!(messages.len(), 3);
-                            let msg = messages.pop().expect("No message");
-                            let topic = messages.pop().expect("No topic");
-                            let message_type = messages.pop().expect("No type");
-                            (message_type,
-                             topic.into_string().expect("Topic should be a string"),
-                             msg)
+            let receiver = receiver.for_each(move |msg| {
+                // TODO: check message type - and handle accordingly.
+                let (message_type, topic, msg) = if let resp::RespValue::Array(mut messages) =
+                    msg {
+                    assert_eq!(messages.len(), 3);
+                    let msg = messages.pop().expect("No message");
+                    let topic = messages.pop().expect("No topic");
+                    let message_type = messages.pop().expect("No type");
+                    (message_type, topic.into_string().expect("Topic should be a string"), msg)
+                } else {
+                    panic!("incorrect type");
+                };
+                let mut subs = subs_reader.lock().expect("Lock is tainted");
+                if let resp::RespValue::BulkString(ref bytes) = message_type {
+                    if bytes == b"subscribe" {
+                        if let Some(pending) = subs.pending.remove(&topic) {
+                            let mut txes = Vec::with_capacity(pending.len());
+                            let mut futures = Vec::with_capacity(pending.len());
+                            for (tx, notification_tx) in pending {
+                                txes.push(tx);
+                                futures.push(notification_tx.send(()));
+                            }
+                            subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
+                            future::join_all(futures)
+                                .map(|_| ())
+                                .map_err(|_| error::internal("unreachable"))
+                                .boxed()
                         } else {
-                            panic!("incorrect type");
-                        };
-                    let mut subs = subs_reader.lock().expect("Lock is tainted");
-                    if let resp::RespValue::BulkString(ref bytes) = message_type {
-                        if bytes == b"subscribe" {
-                            if let Some(pending) = subs.pending.remove(&topic) {
-                                let mut txes = Vec::with_capacity(pending.len());
-                                let mut futures = Vec::with_capacity(pending.len());
-                                for (tx, notification_tx) in pending {
-                                    txes.push(tx);
-                                    futures.push(notification_tx.send(()));
-                                }
-                                subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
+                            future::ok(())
+                                .map_err(|_: ()| error::internal("unreachable"))
+                                .boxed()
+                        }
+                    } else if bytes == b"message" {
+                        match subs.confirmed.get(&topic) {
+                            Some(txes) => {
+                                let futures: Vec<_> = txes.iter()
+                                    .map(|tx| {
+                                             let tx = tx.clone();
+                                             tx.send(msg.clone())
+                                         })
+                                    .collect();
                                 future::join_all(futures)
                                     .map(|_| ())
-                                    .map_err(|_| error::internal("unreachable"))
+                                    .map_err(|e| e.into())
                                     .boxed()
-                            } else {
+                            }
+                            None => {
                                 future::ok(())
                                     .map_err(|_: ()| error::internal("unreachable"))
                                     .boxed()
                             }
-                        } else if bytes == b"message" {
-                            match subs.confirmed.get(&topic) {
-                                Some(txes) => {
-                                    let futures: Vec<_> = txes.iter()
-                                        .map(|tx| {
-                                                 let tx = tx.clone();
-                                                 tx.send(msg.clone())
-                                             })
-                                        .collect();
-                                    future::join_all(futures)
-                                        .map(|_| ())
-                                        .map_err(|e| e.into())
-                                        .boxed()
-                                }
-                                None => {
-                                    future::ok(())
-                                        .map_err(|_: ()| error::internal("unreachable"))
-                                        .boxed()
-                                }
-                            }
-                        } else {
-                            panic!("Unexpected bytes: {:?}", bytes);
                         }
                     } else {
-                        panic!("Message format error: {:?}", message_type);
+                        panic!("Unexpected bytes: {:?}", bytes);
                     }
-                });
+                } else {
+                    panic!("Message format error: {:?}", message_type);
+                }
+            });
             handle.spawn(sender.map(|_| ()));
             handle.spawn(receiver.map_err(|_| ()));
             PubsubConnection {
@@ -285,14 +277,13 @@ mod test {
         let connection = super::connect(&addr, &core.handle())
             .map_err(|e| e.into())
             .and_then(|connection| {
-                let a = connection
-                    .sender
-                    .0
-                    .send(["PING", "TEST"].as_ref().into())
-                    .map_err(|e| e.into());
-                let b = connection.receiver.0.take(1).collect();
-                a.join(b)
-            });
+                          let a = connection
+                              .sender
+                              .send(["PING", "TEST"].as_ref().into())
+                              .map_err(|e| e.into());
+                          let b = connection.receiver.take(1).collect();
+                          a.join(b)
+                      });
 
         let (_, values) = core.run(connection).unwrap();
         assert_eq!(values.len(), 1);
@@ -318,10 +309,9 @@ mod test {
                     ops.into_iter().map(Result::Ok).collect();
                 let send = connection
                     .sender
-                    .0
                     .send_all(stream::iter(ops_r))
                     .map_err(|e| e.into());
-                let receive = connection.receiver.0.skip(1001).take(1).collect();
+                let receive = connection.receiver.skip(1001).take(1).collect();
                 send.join(receive)
             });
         let (_, values) = core.run(connection).unwrap();
