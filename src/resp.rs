@@ -19,16 +19,32 @@ use tokio_io::codec::{Decoder, Encoder};
 
 use super::error::Error;
 
+/// A single RESP value, this owns the data that is read/to-be written to Redis.
+///
+/// It is cloneable to allow multiple copies to be delivered in certain circumstances, e.g. multiple
+/// subscribers to the same topic. TODO - revisit this assumption to make sure its sound, perhaps a
+/// single-subscriber enforcement would make more sense, or sharing via `Arc`
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RespValue {
+    /// Zero, one or more other `RespValue`s.
     Array(Vec<RespValue>),
+
+    /// A bulk string.  In Redis terminology a string is a byte-array, so this is stored as a
+    /// vector of `u8`s to allow clients to interpret the bytes as appropriate.
     BulkString(Vec<u8>),
+
+    /// An error from the Redis server
     Error(String),
+
     Integer(usize),
+
     SimpleString(String),
 }
 
 impl RespValue {
+    /// Convert into a `String` if possible.
+    ///
+    /// Warning: this area is subject to change as its probably too permissive in its current form.
     pub fn into_string(self) -> Result<String, Error> {
         match self {
             RespValue::Array(_) => Err(Error::RESP("Not stringable".into())),
@@ -40,6 +56,10 @@ impl RespValue {
     }
 }
 
+/// A trait to be implemented on types that can be automatically converted into `RespValue`s.
+///
+/// A `From<T>` where `T: ToResp` has been implemented so that everything that implements `ToResp`
+/// can be converted with conversion traits.
 pub trait ToResp {
     fn to_resp(&self) -> RespValue;
 }
@@ -50,7 +70,9 @@ impl<'a> ToResp for &'a str {
     }
 }
 
-impl<'a> ToResp for &'a [&'a str] {
+impl<'a, T> ToResp for &'a [T]
+    where T: ToResp
+{
     fn to_resp(&self) -> RespValue {
         RespValue::Array(self.as_ref().iter().map(|x| x.to_resp()).collect())
     }
