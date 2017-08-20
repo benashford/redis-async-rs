@@ -81,14 +81,14 @@ pub fn paired_connect(addr: &SocketAddr,
                 Arc::new(Mutex::new(VecDeque::new()));
             let receiver_queue = resp_queue.clone();
             let receiver = receiver.for_each(move |msg| {
-            let mut queue = receiver_queue.lock().expect("Lock is tainted");
-            let dest = queue.pop_front().expect("Queue is empty");
-            match dest.send(msg) {
-                Ok(()) => Ok(()),
-                // Ignore error as the channel may have been legitimately closed in the meantime
-                Err(_) => Ok(())
-            }
-        });
+                let mut queue = receiver_queue.lock().expect("Lock is tainted");
+                let dest = queue.pop_front().expect("Queue is empty");
+                match dest.send(msg) {
+                    Ok(()) => Ok(()),
+                    // Ignore error as the channel may have been legitimately closed in the meantime
+                    Err(_) => Ok(())
+                }
+            });
             handle.spawn(sender.map(|_| ()));
             handle.spawn(receiver.map_err(|_| ()));
             PairedConnection {
@@ -118,7 +118,6 @@ impl PairedConnection {
     pub fn send<R>(&self, msg: R) -> Box<Future<Item = resp::RespValue, Error = error::Error>>
         where R: Into<resp::RespValue>
     {
-
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
