@@ -44,12 +44,12 @@ fn main() {
             .map(move |data| {
                 let connection_inner = connection.clone();
                 connection
-                    .send(vec!["INCR", "realistic_test_ctr"])
+                    .send(["INCR", "realistic_test_ctr"].as_ref())
                     .and_then(move |ctr| {
                                   let key = format!("rt_{}", ctr.into_string().unwrap());
                                   let d_val = data.0.to_string();
-                                  connection_inner.send(vec!["SET", &key, &d_val]);
-                                  connection_inner.send(vec!["SET", &data.1, &key])
+                                  connection_inner.send(["SET", &key, &d_val].as_ref());
+                                  connection_inner.send(["SET", &data.1, &key].as_ref())
                               })
             })
             .collect();

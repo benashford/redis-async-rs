@@ -246,7 +246,7 @@ impl PubsubConnection {
         }
 
         let (notification_tx, notification_rx) = oneshot::channel();
-        let subscribe_msg = vec!["SUBSCRIBE", &topic].into();
+        let subscribe_msg = ["SUBSCRIBE", &topic].as_ref().into();
         subs.pending
             .entry(topic)
             .or_insert(Vec::new())
@@ -328,9 +328,9 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
-            let res_f = connection.send(vec!["PING", "TEST"]);
-            connection.send(vec!["SET", "X", "123"]);
-            let wait_f = connection.send(vec!["GET", "X"]);
+            let res_f = connection.send(["PING", "TEST"].as_ref());
+            connection.send(["SET", "X", "123"].as_ref());
+            let wait_f = connection.send(["GET", "X"].as_ref());
             res_f.join(wait_f)
         });
         let (result_1, result_2) = core.run(connect_f).unwrap();
@@ -345,10 +345,10 @@ mod test {
 
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             connection
-                .send(vec!["INCR", "CTR"])
+                .send(["INCR", "CTR"].as_ref())
                 .and_then(move |value| {
                               let value_str = value.into_string().expect("A string");
-                              connection.send(vec!["SET", "LASTCTR", &value_str])
+                              connection.send(["SET", "LASTCTR", &value_str].as_ref())
                           })
         });
         let result = core.run(connect_f).unwrap();
@@ -365,8 +365,8 @@ mod test {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
                 let key = format!("X_{}", i);
-                connection.send(vec!["SET", &key, &i.to_string()]);
-                futures.push(connection.send(vec!["GET", &key]));
+                connection.send(["SET", &key, &i.to_string()].as_ref());
+                futures.push(connection.send(["GET", &key].as_ref()));
             }
             futures.remove(999)
         });
