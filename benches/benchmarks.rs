@@ -16,6 +16,8 @@ extern crate futures;
 extern crate tokio_core;
 extern crate redis_async;
 
+use std::sync::Arc;
+
 use test::Bencher;
 
 use futures::Future;
@@ -49,7 +51,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
     let connection = client::paired_connect(&addr, &core.handle());
     let connection = core.run(connection).unwrap();
 
-    let data_size = 1000;
+    let data_size = 100;
 
     b.iter(|| {
         for x in 0..data_size {
@@ -61,7 +63,32 @@ fn bench_big_pipeline(b: &mut Bencher) {
             let test_key = format!("test_{}", x);
             gets.push(connection.send(["GET", &test_key].as_ref()));
         }
-        let last_get = gets.remove(999);
+        let last_get = gets.remove(data_size - 1);
         let _ = core.run(last_get);
+    });
+}
+
+#[bench]
+fn bench_complex_pipeline(b: &mut Bencher) {
+    let mut core = Core::new().unwrap();
+    let addr = "127.0.0.1:6379".parse().unwrap();
+
+    let connection = client::paired_connect(&addr, &core.handle());
+    let connection = Arc::new(core.run(connection).unwrap());
+
+    let data_size = 100;
+
+    b.iter(|| {
+        let sets = (0..data_size).map(|x| {
+            let connection_inner = connection.clone();
+            connection
+                .send(["INCR", "id_gen"].as_ref())
+                .and_then(move |id| {
+                              let id = format!("id_{}", id.into_string().unwrap());
+                              connection_inner.send(["SET", &id, &x.to_string()].as_ref())
+                          })
+        });
+        let all_sets = futures::future::join_all(sets);
+        let _ = core.run(all_sets);
     });
 }
