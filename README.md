@@ -114,6 +114,8 @@ T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
   +OK..+OK..+OK..
 ```
 
+See note on 'Performance' for what impact this has.
+
 ### PUBSUB
 
 PUBSUB in Redis works differently.  A connection will subscribe to one or more topics, then receive all messages that are published to that topic.  As such the single-request/single-response model of `paired_connect` will not work.  A specific `client::pubsub_connect` is provided for this purpose.
@@ -123,6 +125,25 @@ It returns a future which resolves to a `PubsubConnection`, this provides a `sub
 #### Example
 
 See an [`examples/pubsub.rs`](examples/pubsub.rs).  This will listen on a topic (by default: `test-topic`) and print each message as it arrives.  To run this example: `cargo run --example pubsub` then in a separate terminal open `redis-cli` to the same server and publish some messages (e.g. `PUBLISH test-topic TESTING`).
+
+## Performance
+
+This project is still in its early stages, as such there is plenty of scope for change that could improve (or worsen) performance characteristics.  There are however a number of benchmarks in [`benches/benchmarks.rs`](benches/benchmarks.rs).
+
+The benchmarks are intended to be compatible with those of [redis-rs](https://github.com/mitsuhiko/redis-rs), I've added several more to cover more scenarios.
+
+### Results
+
+In most cases the difference is small.
+
+| Benchmark        | redis-rs (the control)                                           | redis-async-rs  |
+| ---------------- | ---------------------------------------------------------------- | --------------- |
+| simple_getsetdel | 122,495 ns/iter (not pipelined)<br>47,767 ns/iter (pipelined)    | 56,321 ns/iter  |
+| complex          | 8,336,466 ns/iter (non pipelined)<br>527,535 ns/iter (pipelined) | 939,380 ns/iter |
+
+For `redis-rs` each benchmark has a pipelined and a non-pipelined version.  For `redis-async-rs` there is only one version as pipelining is handled implicitely.
+
+The results clearly show the effects of the implicit pipelining, however explicit pipelining of `redis-rs` still wins.
 
 ## Next steps
 
