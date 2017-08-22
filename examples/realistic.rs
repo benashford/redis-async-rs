@@ -39,7 +39,7 @@ fn main() {
 
     let send_data = test_f.and_then(|connection| {
         let connection = Arc::new(connection);
-        let futures: Vec<_> = test_data
+        let futures = test_data
             .into_iter()
             .map(move |data| {
                 let connection_inner = connection.clone();
@@ -51,8 +51,7 @@ fn main() {
                                   connection_inner.send(["SET", &key, &d_val].as_ref());
                                   connection_inner.send(["SET", &data.1, &key].as_ref())
                               })
-            })
-            .collect();
+            });
         future::join_all(futures)
     });
 
