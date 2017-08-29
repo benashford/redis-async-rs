@@ -33,7 +33,9 @@ use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 
-use super::{error, resp};
+use super::error;
+use super::resp;
+use super::resp::FromResp;
 
 /// TODO: comeback and optimise this number
 const DEFAULT_BUFFER_SIZE: usize = 100;
@@ -105,6 +107,8 @@ pub struct PairedConnection {
     resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
 }
 
+type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
+
 impl PairedConnection {
     /// Sends a command to Redis.
     ///
@@ -115,14 +119,29 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<R>(&self, msg: R) -> Box<Future<Item = resp::RespValue, Error = error::Error>>
+    pub fn send<R, T: resp::FromResp + 'static>(&self, msg: R) -> SendBox<T>
         where R: Into<resp::RespValue>
     {
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
         mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Failed to send");
-        Box::new(rx.map_err(|e| e.into()))
+        let future = rx.then(|v| match v {
+                                 Ok(v) => {
+                                     match T::from_resp(v) {
+                                         Ok(t) => future::ok(t),
+                                         Err(e) => future::err(e),
+                                     }
+                                 }
+                                 Err(e) => future::err(e.into()),
+                             });
+        Box::new(future)
+    }
+
+    pub fn send_and_forget<R>(&self, msg: R)
+        where R: Into<resp::RespValue>
+    {
+        let _: SendBox<String> = self.send(msg);
     }
 }
 
@@ -151,7 +170,7 @@ pub fn pubsub_connect(addr: &SocketAddr,
                     let msg = messages.pop().expect("No message");
                     let topic = messages.pop().expect("No topic");
                     let message_type = messages.pop().expect("No type");
-                    (message_type, topic.into_string().expect("Topic should be a string"), msg)
+                    (message_type, String::from_resp(topic).expect("Topic should be a string"), msg)
                 } else {
                     panic!("incorrect type");
                 };
@@ -329,13 +348,13 @@ mod test {
 
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             let res_f = connection.send(["PING", "TEST"].as_ref());
-            connection.send(["SET", "X", "123"].as_ref());
+            connection.send_and_forget(["SET", "X", "123"].as_ref());
             let wait_f = connection.send(["GET", "X"].as_ref());
             res_f.join(wait_f)
         });
-        let (result_1, result_2) = core.run(connect_f).unwrap();
-        assert_eq!(result_1, "TEST".into());
-        assert_eq!(result_2, "123".into());
+        let (result_1, result_2): (String, String) = core.run(connect_f).unwrap();
+        assert_eq!(result_1, "TEST");
+        assert_eq!(result_2, "123");
     }
 
     #[test]
@@ -346,13 +365,10 @@ mod test {
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             connection
                 .send(["INCR", "CTR"].as_ref())
-                .and_then(move |value| {
-                              let value_str = value.into_string().expect("A string");
-                              connection.send(["SET", "LASTCTR", &value_str].as_ref())
-                          })
+                .and_then(move |value: String| connection.send(["SET", "LASTCTR", &value].as_ref()))
         });
-        let result = core.run(connect_f).unwrap();
-        assert_eq!(result, resp::RespValue::SimpleString("OK".into()));
+        let result: String = core.run(connect_f).unwrap();
+        assert_eq!(result, "OK");
     }
 
     #[test]
@@ -365,13 +381,13 @@ mod test {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
                 let key = format!("X_{}", i);
-                connection.send(["SET", &key, &i.to_string()].as_ref());
+                connection.send_and_forget(["SET", &key, &i.to_string()].as_ref());
                 futures.push(connection.send(["GET", &key].as_ref()));
             }
             futures.remove(999)
         });
-        let result = core.run(send_data).unwrap();
-        assert_eq!(result.into_string().unwrap(), "999");
+        let result: String = core.run(send_data).unwrap();
+        assert_eq!(result, "999");
     }
 
     #[test]
@@ -386,11 +402,12 @@ mod test {
             .and_then(|(paired, pubsub)| {
                 let subscribe = pubsub.subscribe("test-topic");
                 subscribe.and_then(move |msgs| {
-                    paired.send(vec!["PUBLISH", "test-topic", "test-message"]);
-                    paired.send(vec!["PUBLISH", "test-not-topic", "test-message-1.5"]);
+                    paired.send_and_forget(["PUBLISH", "test-topic", "test-message"].as_ref());
+                    paired.send_and_forget(["PUBLISH", "test-not-topic", "test-message-1.5"]
+                                               .as_ref());
                     paired
-                        .send(vec!["PUBLISH", "test-topic", "test-message2"])
-                        .map(|_| msgs)
+                        .send(["PUBLISH", "test-topic", "test-message2"].as_ref())
+                        .map(|_: resp::RespValue| msgs)
                 })
             });
         let tst = msgs.and_then(|msgs| {

@@ -41,15 +41,25 @@ pub enum RespValue {
     SimpleString(String),
 }
 
-impl RespValue {
-    /// Convert into a `String` if possible.
-    ///
-    /// Warning: this area is subject to change as its probably too permissive in its current form.
-    pub fn into_string(self) -> Result<String, Error> {
-        match self {
-            RespValue::Array(_) => Err(Error::RESP("Not stringable".into())),
+pub trait FromResp: Sized {
+    fn from_resp(resp: RespValue) -> Result<Self, Error>;
+}
+
+impl FromResp for RespValue {
+    fn from_resp(resp: RespValue) -> Result<RespValue, Error> {
+        match resp {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            x => Ok(x),
+        }
+    }
+}
+
+impl FromResp for String {
+    fn from_resp(resp: RespValue) -> Result<String, Error> {
+        match resp {
+            RespValue::Array(_) => Err(Error::RESP("Cannot be converted into a string".into())),
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
-            RespValue::Error(string) => Ok(string),
+            RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
         }

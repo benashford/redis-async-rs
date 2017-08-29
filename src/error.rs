@@ -23,6 +23,9 @@ pub enum Error {
     /// A RESP parsing/serialising error occurred
     RESP(String),
 
+    /// A remote error
+    Remote(String),
+
     /// An unexpected error, boxed to allow type-erasure.  In this context "unexpected" means
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
@@ -58,6 +61,7 @@ impl error::Error for Error {
             Error::Internal(ref s) => s,
             Error::IO(ref err) => err.description(),
             Error::RESP(ref s) => s,
+            Error::Remote(ref s) => s,
             Error::Unexpected(ref err) => err.description(),
         }
     }
@@ -67,6 +71,7 @@ impl error::Error for Error {
             Error::Internal(_) => None,
             Error::IO(ref err) => Some(err),
             Error::RESP(_) => None,
+            Error::Remote(_) => None,
             Error::Unexpected(ref err) => Some(err.as_ref()),
         }
     }

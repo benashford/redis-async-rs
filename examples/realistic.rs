@@ -45,16 +45,16 @@ fn main() {
                 let connection_inner = connection.clone();
                 connection
                     .send(["INCR", "realistic_test_ctr"].as_ref())
-                    .and_then(move |ctr| {
-                                  let key = format!("rt_{}", ctr.into_string().unwrap());
+                    .and_then(move |ctr:String| {
+                                  let key = format!("rt_{}", ctr);
                                   let d_val = data.0.to_string();
-                                  connection_inner.send(["SET", &key, &d_val].as_ref());
+                                  connection_inner.send_and_forget(["SET", &key, &d_val].as_ref());
                                   connection_inner.send(["SET", &data.1, &key].as_ref())
                               })
             });
         future::join_all(futures)
     });
 
-    let result = core.run(send_data).unwrap();
+    let result:Vec<String> = core.run(send_data).unwrap();
     assert_eq!(result.len(), test_data_size);
 }

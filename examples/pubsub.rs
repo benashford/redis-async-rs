@@ -20,6 +20,7 @@ use futures::future;
 use tokio_core::reactor::Core;
 
 use redis_async::client;
+use redis_async::resp::FromResp;
 
 fn main() {
     let mut core = Core::new().unwrap();
@@ -30,7 +31,7 @@ fn main() {
 
     let msgs = client::pubsub_connect(&addr, &handle).and_then(move |connection| connection.subscribe(topic));
     let the_loop = msgs.map_err(|_| ()).and_then(|msgs| msgs.for_each(|message| {
-        println!("{}", message.into_string().unwrap());
+        println!("{}", String::from_resp(message).unwrap());
         future::ok(())
     }));
 
