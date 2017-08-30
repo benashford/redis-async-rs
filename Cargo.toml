@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -9,7 +9,7 @@ repository = "https://github.com/benashford/redis-async-rs"
 keywords = ["redis", "tokio"]
 
 [dependencies]
-bytes = "0.4.4"
-futures = "0.1.13"
-tokio-core = "0.1.7"
-tokio-io = "0.1.2"
+bytes = "0.4.5"
+futures = "0.1.15"
+tokio-core = "0.1.9"
+tokio-io = "0.1.3"

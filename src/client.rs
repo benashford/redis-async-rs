@@ -45,17 +45,16 @@ const DEFAULT_BUFFER_SIZE: usize = 100;
 pub fn connect(addr: &SocketAddr,
                handle: &Handle)
                -> Box<Future<Item = ClientConnection, Error = io::Error>> {
-    TcpStream::connect(addr, handle)
-        .map(move |socket| {
-            let framed = socket.framed(resp::RespCodec);
-            let (write_f, read_f) = framed.split();
-            let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
-            ClientConnection {
-                sender: Box::new(write_b),
-                receiver: Box::new(read_f),
-            }
-        })
-        .boxed()
+    let con = TcpStream::connect(addr, handle).map(move |socket| {
+        let framed = socket.framed(resp::RespCodec);
+        let (write_f, read_f) = framed.split();
+        let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
+        ClientConnection {
+            sender: Box::new(write_b),
+            receiver: Box::new(read_f),
+        }
+    });
+    Box::new(con)
 }
 
 // TODO - is the boxing necessary?  It makes the type signature much simpler
@@ -128,7 +127,9 @@ impl PairedConnection {
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
         queue.push_back(tx);
-        mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Failed to send");
+        self.out_tx
+            .unbounded_send(msg.into())
+            .expect("Failed to send");
         let future = rx.then(|v| match v {
                                  Ok(v) => future::result(T::from_resp(v)),
                                  Err(e) => future::err(e.into()),
@@ -185,14 +186,13 @@ pub fn pubsub_connect(addr: &SocketAddr,
                                 futures.push(notification_tx.send(()));
                             }
                             subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
-                            future::join_all(futures)
+                            let futures = future::join_all(futures)
                                 .map(|_| ())
-                                .map_err(|_| error::internal("unreachable"))
-                                .boxed()
+                                .map_err(|_| error::internal("unreachable"));
+                            Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
                         } else {
-                            future::ok(())
-                                .map_err(|_: ()| error::internal("unreachable"))
-                                .boxed()
+                            let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
+                            Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
                         }
                     } else if bytes == b"message" {
                         match subs.confirmed.get(&topic) {
@@ -203,15 +203,14 @@ pub fn pubsub_connect(addr: &SocketAddr,
                                              tx.send(msg.clone())
                                          })
                                     .collect();
-                                future::join_all(futures)
-                                    .map(|_| ())
-                                    .map_err(|e| e.into())
-                                    .boxed()
+                                let futures =
+                                    future::join_all(futures).map(|_| ()).map_err(|e| e.into());
+                                Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
                             }
                             None => {
-                                future::ok(())
-                                    .map_err(|_: ()| error::internal("unreachable"))
-                                    .boxed()
+                                let ok = future::ok(())
+                                    .map_err(|_: ()| error::internal("unreachable"));
+                                Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
                             }
                         }
                     } else {
@@ -270,7 +269,9 @@ impl PubsubConnection {
             .entry(topic)
             .or_insert(Vec::new())
             .push((tx, notification_tx));
-        mpsc::UnboundedSender::send(&self.out_tx, subscribe_msg).expect("Failed to send");
+        self.out_tx
+            .unbounded_send(subscribe_msg)
+            .expect("Failed to send");
 
         let done = notification_rx.map(|_| stream).map_err(|e| e.into());
         Box::new(done)
@@ -323,11 +324,9 @@ mod test {
                                                  .into()
                                          }));
                 ops.push(["SMEMBERS", "test_set"].as_ref().into());
-                let ops_r: Vec<Result<resp::RespValue, io::Error>> =
-                    ops.into_iter().map(Result::Ok).collect();
                 let send = connection
                     .sender
-                    .send_all(stream::iter(ops_r))
+                    .send_all(stream::iter_ok::<_, io::Error>(ops))
                     .map_err(|e| e.into());
                 let receive = connection.receiver.skip(1001).take(1).collect();
                 send.join(receive)
