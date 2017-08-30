@@ -127,12 +127,7 @@ impl PairedConnection {
         queue.push_back(tx);
         mpsc::UnboundedSender::send(&self.out_tx, msg.into()).expect("Failed to send");
         let future = rx.then(|v| match v {
-                                 Ok(v) => {
-                                     match T::from_resp(v) {
-                                         Ok(t) => future::ok(t),
-                                         Err(e) => future::err(e),
-                                     }
-                                 }
+                                 Ok(v) => future::result(T::from_resp(v)),
                                  Err(e) => future::err(e.into()),
                              });
         Box::new(future)
