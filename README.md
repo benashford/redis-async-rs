@@ -7,7 +7,7 @@
 [![](https://docs.rs/redis-async/badge.svg)](https://docs.rs/redis-async/)
 [![Dependency Status](https://dependencyci.com/github/benashford/redis-async-rs/badge)](https://dependencyci.com/github/benashford/redis-async-rs)
 
-An exercise in learning Tokio and Rust's futures by creating a Redis client.
+An exercise in learning Tokio and Rust's futures by creating a Redis client.  [Documentation](https://docs.rs/redis-async/)
 
 ## Releases
 

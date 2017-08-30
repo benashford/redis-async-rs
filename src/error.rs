@@ -8,6 +8,8 @@
  * except according to those terms.
  */
 
+//! Error handling
+
 use std::{error, fmt, io};
 
 use futures::sync::{mpsc, oneshot};
