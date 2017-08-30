@@ -113,8 +113,11 @@ impl PairedConnection {
     /// Sends a command to Redis.
     ///
     /// The message must be in the format of a single RESP message (or a format for which a
-    /// conversion trait is defined).  Returned is a future that resolves to a RESP message
-    /// containing the result.
+    /// conversion trait is defined).  Returned is a future that resolves to the value returned
+    /// from Redis.  The type must be one for which the `resp::FromResp` trait is defined.
+    ///
+    /// The future will fail for numerous reasons, including but not limited to: IO issues, conversion
+    /// problems, and server-side errors being returned by Redis.
     ///
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
@@ -133,6 +136,8 @@ impl PairedConnection {
         Box::new(future)
     }
 
+    /// Send to Redis, similar to `send` but not future is returned.  The data will be sent, errors will
+    /// be swallowed.
     pub fn send_and_forget<R>(&self, msg: R)
         where R: Into<resp::RespValue>
     {
