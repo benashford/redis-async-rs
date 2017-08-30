@@ -35,11 +35,11 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
     let connection = core.run(connection).unwrap();
 
     b.iter(|| {
-               let set = connection.send(["SET", "test_key", "42"].as_ref());
+               connection.send_and_forget(["SET", "test_key", "42"].as_ref());
                let get = connection.send(["GET", "test_key"].as_ref());
                let del = connection.send(["DEL", "test_key"].as_ref());
                let get_set = get.join(del);
-               let (_, _) = core.run(get_set).unwrap();
+               let (_, _): (String, String) = core.run(get_set).unwrap();
            });
 }
 
@@ -56,7 +56,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
     b.iter(|| {
         for x in 0..data_size {
             let test_key = format!("test_{}", x);
-            connection.send(["SET", &test_key, &x.to_string()].as_ref());
+            connection.send_and_forget(["SET", &test_key, &x.to_string()].as_ref());
         }
         let mut gets = Vec::with_capacity(data_size);
         for x in 0..data_size {
@@ -64,7 +64,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
             gets.push(connection.send(["GET", &test_key].as_ref()));
         }
         let last_get = gets.remove(data_size - 1);
-        let _ = core.run(last_get);
+        let _:String = core.run(last_get).unwrap();
     });
 }
 
@@ -83,12 +83,12 @@ fn bench_complex_pipeline(b: &mut Bencher) {
             let connection_inner = connection.clone();
             connection
                 .send(["INCR", "id_gen"].as_ref())
-                .and_then(move |id| {
-                              let id = format!("id_{}", id.into_string().unwrap());
+                .and_then(move |id: String| {
+                              let id = format!("id_{}", id);
                               connection_inner.send(["SET", &id, &x.to_string()].as_ref())
                           })
         });
         let all_sets = futures::future::join_all(sets);
-        let _ = core.run(all_sets);
+        let _:Vec<String> = core.run(all_sets).unwrap();
     });
 }
