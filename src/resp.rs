@@ -41,7 +41,13 @@ pub enum RespValue {
     SimpleString(String),
 }
 
+/// A trait to be implemented for every time which can be read from a RESP value.
+///
+/// Implementing this trait on a type means that type becomes a valid return type for calls such as `send` on
+/// `client::PairedConnection`
 pub trait FromResp: Sized {
+    /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
+    /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
     fn from_resp(resp: RespValue) -> Result<Self, Error>;
 }
 
