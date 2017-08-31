@@ -150,6 +150,8 @@ The results clearly show the effects of the implicit pipelining, however explici
 * Better documentation
 * Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
 * Test all Redis commands
+* Decide on best way of supporting [Redis transactions](https://redis.io/topics/transactions)
+* Decide on best way of supporting blocking Redis commands
 * Ensure all edge-cases are complete (e.g. Redis commands that return sets, nil, etc.)
 
 ## History
