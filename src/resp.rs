@@ -42,6 +42,15 @@ pub enum RespValue {
     SimpleString(String),
 }
 
+impl RespValue {
+    fn to_result(self) -> Result<RespValue, Error> {
+        match self {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            x => Ok(x),
+        }
+    }
+}
+
 /// A trait to be implemented for every time which can be read from a RESP value.
 ///
 /// Implementing this trait on a type means that type becomes a valid return type for calls such as `send` on
@@ -49,34 +58,32 @@ pub enum RespValue {
 pub trait FromResp: Sized {
     /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
     /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
-    fn from_resp(resp: RespValue) -> Result<Self, Error>;
+    fn from_resp(resp: RespValue) -> Result<Self, Error> {
+        Self::from_resp_int(resp.to_result()?)
+    }
+
+    fn from_resp_int(resp: RespValue) -> Result<Self, Error>;
 }
 
 impl FromResp for RespValue {
-    fn from_resp(resp: RespValue) -> Result<RespValue, Error> {
-        match resp {
-            // TODO - this logic is repeated in all implementations, move somewhere central
-            RespValue::Error(string) => Err(Error::Remote(string)),
-            x => Ok(x),
-        }
+    fn from_resp_int(resp: RespValue) -> Result<RespValue, Error> {
+        Ok(resp)
     }
 }
 
 impl FromResp for String {
-    fn from_resp(resp: RespValue) -> Result<String, Error> {
+    fn from_resp_int(resp: RespValue) -> Result<String, Error> {
         match resp {
-            // TODO - the "cannot be converted" probably needs to explain what cannot be converted
-            RespValue::Array(_) => Err(error::resp("Cannot convert into a string", resp)),
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
-            RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
+            _ => Err(error::resp("Cannot convert into a string", resp)),
         }
     }
 }
 
 impl FromResp for usize {
-    fn from_resp(resp: RespValue) -> Result<usize, Error> {
+    fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
         match resp {
             RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i),
@@ -86,7 +93,7 @@ impl FromResp for usize {
 }
 
 impl FromResp for () {
-    fn from_resp(resp: RespValue) -> Result<(), Error> {
+    fn from_resp_int(resp: RespValue) -> Result<(), Error> {
         match resp {
             RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::SimpleString(string) => {
