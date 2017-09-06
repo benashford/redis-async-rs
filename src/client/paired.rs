@@ -21,12 +21,12 @@ use error;
 use resp;
 use super::connect::{connect, ClientConnection};
 
+type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error>>;
+
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-pub fn paired_connect(addr: &SocketAddr,
-                      handle: &Handle)
-                      -> Box<Future<Item = PairedConnection, Error = error::Error>> {
+pub fn paired_connect(addr: &SocketAddr, handle: &Handle) -> PairedConnectionBox {
     let handle = handle.clone();
     let paired_con = connect(addr, &handle)
         .map(move |connection| {
@@ -98,5 +98,149 @@ impl PairedConnection {
         where R: Into<resp::RespValue>
     {
         let _: SendBox<String> = self.send(msg);
+    }
+}
+
+mod commands {
+    use resp::{ToRespString, RespValue};
+
+    use super::SendBox;
+
+    impl super::PairedConnection {
+        pub fn append<K, V>(&self, (key, value): (K, V)) -> SendBox<usize>
+            where K: ToRespString,
+                  V: ToRespString
+        {
+            self.send(RespValue::Array(vec!["APPEND".to_resp_string(),
+                                            key.to_resp_string(),
+                                            value.to_resp_string()]))
+        }
+    }
+
+    // MARKER - all accounted for above this line
+
+    pub trait DelCommand {
+        fn to_resp(&self) -> RespValue;
+    }
+
+    impl<'a> DelCommand for (&'a str) {
+        fn to_resp(&self) -> RespValue {
+            RespValue::Array(vec!["DEL".to_resp_string(), self.to_resp_string()])
+        }
+    }
+
+    impl<'a, S: AsRef<str>> DelCommand for (&'a [S]) {
+        fn to_resp(&self) -> RespValue {
+            let mut keys = Vec::with_capacity(self.len() + 1);
+            keys.push("DEL".to_resp_string());
+            keys.extend(self.iter().map(|key| key.as_ref().to_resp_string()));
+            RespValue::Array(keys)
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn del<C>(&self, cmd: C) -> SendBox<usize>
+            where C: DelCommand
+        {
+            self.send(cmd.to_resp())
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use futures::future;
+        use futures::Future;
+
+        use tokio_core::reactor::Core;
+
+        fn setup() -> (Core, super::super::PairedConnectionBox) {
+            let core = Core::new().unwrap();
+            let handle = core.handle();
+            let addr = "127.0.0.1:6379".parse().unwrap();
+
+            (core, super::super::paired_connect(&addr, &handle))
+        }
+
+        fn setup_and_delete(keys: &[&str]) -> (Core, super::super::PairedConnectionBox) {
+            let (mut core, connection) = setup();
+
+            let delete = connection.and_then(|connection| connection.del(keys).map(|_| connection));
+
+            let connection = core.run(delete).unwrap();
+            (core, Box::new(future::ok(connection)))
+        }
+
+        #[test]
+        fn append_test() {
+            let (mut core, connection) = setup_and_delete(&["APPENDKEY"]);
+
+            let connection = connection
+                .and_then(|connection| connection.append(("APPENDKEY", "ABC")));
+
+            let count = core.run(connection).unwrap();
+            assert_eq!(count, 3);
+        }
+
+        #[test]
+        fn del_test() {
+            let (mut core, connection) = setup();
+
+            let del_keys = "DEL_KEY";
+            let connection = connection.and_then(|connection| connection.del((del_keys)));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_string() {
+            let (mut core, connection) = setup();
+
+            let del_keys = String::from("DEL_KEY");
+            let connection = connection.and_then(|connection| connection.del((del_keys.as_str())));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_vec() {
+            let (mut core, connection) = setup();
+
+            let del_keys = vec!["DEL_KEY_1", "DEL_KEY_2"];
+            let connection = connection
+                .and_then(|connection| connection.del((del_keys.as_slice())));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_vec_string() {
+            let (mut core, connection) = setup();
+
+            let del_keys = vec![String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
+            let connection = connection
+                .and_then(|connection| connection.del((del_keys.as_slice())));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_ary() {
+            let (mut core, connection) = setup();
+
+            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
+            let connection = connection.and_then(|connection| connection.del((&del_keys[..])));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_ary_string() {
+            let (mut core, connection) = setup();
+
+            let del_keys = [String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
+            let connection = connection.and_then(|connection| connection.del((&del_keys[..])));
+
+            let _ = core.run(connection).unwrap();
+        }
     }
 }

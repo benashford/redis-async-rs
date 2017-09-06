@@ -17,6 +17,7 @@ use bytes::{BufMut, BytesMut};
 
 use tokio_io::codec::{Decoder, Encoder};
 
+use super::error;
 use super::error::Error;
 
 /// A single RESP value, this owns the data that is read/to-be written to Redis.
@@ -54,6 +55,7 @@ pub trait FromResp: Sized {
 impl FromResp for RespValue {
     fn from_resp(resp: RespValue) -> Result<RespValue, Error> {
         match resp {
+            // TODO - this logic is repeated in all implementations, move somewhere central
             RespValue::Error(string) => Err(Error::Remote(string)),
             x => Ok(x),
         }
@@ -63,11 +65,41 @@ impl FromResp for RespValue {
 impl FromResp for String {
     fn from_resp(resp: RespValue) -> Result<String, Error> {
         match resp {
-            RespValue::Array(_) => Err(Error::RESP("Cannot be converted into a string".into())),
+            // TODO - the "cannot be converted" probably needs to explain what cannot be converted
+            RespValue::Array(_) => Err(error::resp("Cannot convert into a string", resp)),
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
             RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
+        }
+    }
+}
+
+impl FromResp for usize {
+    fn from_resp(resp: RespValue) -> Result<usize, Error> {
+        match resp {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            RespValue::Integer(i) => Ok(i),
+            _ => Err(error::resp("Cannot be converted into a usize", resp)),
+        }
+    }
+}
+
+impl FromResp for () {
+    fn from_resp(resp: RespValue) -> Result<(), Error> {
+        match resp {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            RespValue::SimpleString(string) => {
+                match string.as_ref() {
+                    "OK" => Ok(()),
+                    _ => {
+                        Err(Error::RESP(format!("Unexpected value within SimpleString: {}",
+                                                string),
+                                        None))
+                    }
+                }
+            }
+            _ => Err(error::resp("Unexpected value", resp)),
         }
     }
 }
@@ -80,23 +112,11 @@ pub trait ToResp {
     fn to_resp(&self) -> RespValue;
 }
 
-impl<'a> ToResp for &'a str {
-    fn to_resp(&self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
-    }
-}
-
 impl<'a, T> ToResp for &'a [T]
     where T: ToResp
 {
     fn to_resp(&self) -> RespValue {
         RespValue::Array(self.as_ref().iter().map(|x| x.to_resp()).collect())
-    }
-}
-
-impl<'a> ToResp for String {
-    fn to_resp(&self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
     }
 }
 
@@ -111,6 +131,31 @@ impl<'a, T> ToResp for Vec<T>
 impl<T: ToResp> From<T> for RespValue {
     fn from(from: T) -> RespValue {
         from.to_resp()
+    }
+}
+
+/// A specific trait to convert into a `RespValue::BulkString`
+pub trait ToRespString {
+    fn to_resp_string(&self) -> RespValue;
+}
+
+impl ToRespString for String {
+    fn to_resp_string(&self) -> RespValue {
+        RespValue::BulkString(self.as_bytes().into())
+    }
+}
+
+impl<'a> ToRespString for &'a str {
+    fn to_resp_string(&self) -> RespValue {
+        RespValue::BulkString(self.as_bytes().into())
+    }
+}
+
+impl<T> ToResp for T
+    where T: ToRespString
+{
+    fn to_resp(&self) -> RespValue {
+        self.to_resp_string()
     }
 }
 
@@ -184,7 +229,7 @@ impl Encoder for RespCodec {
 
 #[inline]
 fn parse_error(message: String) -> Error {
-    Error::RESP(message)
+    Error::RESP(message, None)
 }
 
 /// Many RESP types have their length (which is either bytes or "number of elements", depending on context)

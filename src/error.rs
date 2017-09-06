@@ -14,6 +14,8 @@ use std::{error, fmt, io};
 
 use futures::sync::{mpsc, oneshot};
 
+use resp;
+
 #[derive(Debug)]
 pub enum Error {
     /// A non-specific internal error that prevented an operation from completing
@@ -23,7 +25,7 @@ pub enum Error {
     IO(io::Error),
 
     /// A RESP parsing/serialising error occurred
-    RESP(String),
+    RESP(String, Option<resp::RespValue>),
 
     /// A remote error
     Remote(String),
@@ -37,6 +39,10 @@ pub enum Error {
 
 pub fn internal<T: Into<String>>(msg: T) -> Error {
     Error::Internal(msg.into())
+}
+
+pub fn resp<T: Into<String>>(msg: T, resp: resp::RespValue) -> Error {
+    Error::RESP(msg.into(), Some(resp))
 }
 
 impl From<io::Error> for Error {
@@ -62,7 +68,7 @@ impl error::Error for Error {
         match *self {
             Error::Internal(ref s) => s,
             Error::IO(ref err) => err.description(),
-            Error::RESP(ref s) => s,
+            Error::RESP(ref s, _) => s,
             Error::Remote(ref s) => s,
             Error::Unexpected(ref err) => err.description(),
         }
@@ -72,7 +78,7 @@ impl error::Error for Error {
         match *self {
             Error::Internal(_) => None,
             Error::IO(ref err) => Some(err),
-            Error::RESP(_) => None,
+            Error::RESP(_, _) => None,
             Error::Remote(_) => None,
             Error::Unexpected(ref err) => Some(err.as_ref()),
         }
