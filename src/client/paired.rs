@@ -61,7 +61,18 @@ pub struct PairedConnection {
     resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
 }
 
-type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
+pub type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
+
+#[macro_export]
+macro_rules! faf {
+    ($e:expr) => (
+        {
+            use $crate::client::paired::SendBox;
+            use $crate::resp;
+            let _:SendBox<resp::RespValue> = $e;
+        }
+    )
+}
 
 impl PairedConnection {
     /// Sends a command to Redis.
@@ -90,14 +101,6 @@ impl PairedConnection {
                                  Err(e) => future::err(e.into()),
                              });
         Box::new(future)
-    }
-
-    /// Send to Redis, similar to `send` but not future is returned.  The data will be sent, errors will
-    /// be swallowed.
-    pub fn send_and_forget<R>(&self, msg: R)
-        where R: Into<resp::RespValue>
-    {
-        let _: SendBox<String> = self.send(msg);
     }
 }
 

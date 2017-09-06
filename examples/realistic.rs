@@ -10,6 +10,7 @@
 
 extern crate futures;
 extern crate tokio_core;
+#[macro_use]
 extern crate redis_async;
 
 use std::sync::Arc;
@@ -48,7 +49,7 @@ fn main() {
                     .and_then(move |ctr:String| {
                                   let key = format!("rt_{}", ctr);
                                   let d_val = data.0.to_string();
-                                  connection_inner.send_and_forget(["SET", &key, &d_val].as_ref());
+                                  faf!(connection_inner.send(["SET", &key, &d_val].as_ref()));
                                   connection_inner.send(["SET", &data.1, &key].as_ref())
                               })
             });
