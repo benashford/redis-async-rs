@@ -119,13 +119,19 @@ mod commands {
         }
     }
 
-    impl super::PairedConnection {
-        pub fn append<K, V>(&self, (key, value): (K, V)) -> SendBox<usize>
-            where K: ToRespString,
-                  V: ToRespString
-        {
-            self.send(resp_array!["APPEND", key, value])
+    macro_rules! simple_command {
+        ($n:ident,$k:expr,[ $(($p:ident : $t:ident)),* ],$r:ty) => {
+            pub fn $n< $($t,)* >(&self, ($($p,)*): ($($t,)*)) -> SendBox<$r>
+            where $($t: ToRespString,)*
+            {
+                self.send(resp_array![ $k $(,$p)* ])
+            }
         }
+    }
+
+    impl super::PairedConnection {
+        simple_command!(append, "APPEND", [(key: K), (value: V)], usize);
+        simple_command!(auth, "AUTH", [(password: P)], ());
     }
 
     // MARKER - all accounted for above this line
