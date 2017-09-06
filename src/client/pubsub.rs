@@ -141,7 +141,7 @@ impl PubsubConnection {
         }
 
         let (notification_tx, notification_rx) = oneshot::channel();
-        let subscribe_msg = ["SUBSCRIBE", &topic].as_ref().into();
+        let subscribe_msg = resp_array!["SUBSCRIBE", topic];
         subs.pending
             .entry(topic)
             .or_insert(Vec::new())

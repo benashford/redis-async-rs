@@ -45,12 +45,12 @@ fn main() {
             .map(move |data| {
                 let connection_inner = connection.clone();
                 connection
-                    .send(["INCR", "realistic_test_ctr"].as_ref())
+                    .send(resp_array!["INCR", "realistic_test_ctr"])
                     .and_then(move |ctr:String| {
                                   let key = format!("rt_{}", ctr);
                                   let d_val = data.0.to_string();
-                                  faf!(connection_inner.send(["SET", &key, &d_val].as_ref()));
-                                  connection_inner.send(["SET", &data.1, &key].as_ref())
+                                  faf!(connection_inner.send(resp_array!["SET", key, d_val]));
+                                  connection_inner.send(resp_array!["SET", data.1, key])
                               })
             });
         future::join_all(futures)

@@ -119,25 +119,28 @@ pub trait ToResp {
     fn to_resp(&self) -> RespValue;
 }
 
-impl<'a, T> ToResp for &'a [T]
-    where T: ToResp
-{
-    fn to_resp(&self) -> RespValue {
-        RespValue::Array(self.as_ref().iter().map(|x| x.to_resp()).collect())
-    }
-}
-
-impl<'a, T> ToResp for Vec<T>
-    where T: ToResp
-{
-    fn to_resp(&self) -> RespValue {
-        RespValue::Array(self.into_iter().map(|v| v.to_resp()).collect())
-    }
-}
-
 impl<T: ToResp> From<T> for RespValue {
     fn from(from: T) -> RespValue {
         from.to_resp()
+    }
+}
+
+/// Standalone function for converting into Resp Arrays
+pub fn to_resp_array<T: ToResp>(data: &[T]) -> RespValue {
+    RespValue::Array(data.into_iter().map(|d| d.to_resp()).collect())
+}
+
+#[macro_export]
+macro_rules! resp_array {
+    ($($e:expr),*) => {
+        {
+            use $crate::resp::ToResp;
+            $crate::resp::RespValue::Array(vec![
+                $(
+                    $e.to_resp(),
+                )*
+            ])
+        }
     }
 }
 
@@ -155,6 +158,18 @@ impl ToRespString for String {
 impl<'a> ToRespString for &'a str {
     fn to_resp_string(&self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
+    }
+}
+
+impl<'a> ToRespString for &'a [u8] {
+    fn to_resp_string(&self) -> RespValue {
+        RespValue::BulkString(self.to_vec())
+    }
+}
+
+impl ToRespString for Vec<u8> {
+    fn to_resp_string(&self) -> RespValue {
+        RespValue::BulkString(self.clone())
     }
 }
 

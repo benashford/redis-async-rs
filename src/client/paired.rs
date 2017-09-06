@@ -109,7 +109,7 @@ mod commands {
 
     use super::SendBox;
 
-    macro_rules! resp_array {
+    macro_rules! resp_string_array {
         ($($e:expr),*) => {
             RespValue::Array(vec![
                 $(
@@ -119,12 +119,13 @@ mod commands {
         }
     }
 
+    // TODO - check the expansion regarding trailing commas, etc.
     macro_rules! simple_command {
         ($n:ident,$k:expr,[ $(($p:ident : $t:ident)),* ],$r:ty) => {
             pub fn $n< $($t,)* >(&self, ($($p,)*): ($($t,)*)) -> SendBox<$r>
             where $($t: ToRespString,)*
             {
-                self.send(resp_array![ $k $(,$p)* ])
+                self.send(resp_string_array![ $k $(,$p)* ])
             }
         }
     }
@@ -140,12 +141,7 @@ mod commands {
         fn to_resp(&self) -> RespValue;
     }
 
-    impl<'a, T: ToRespString> DelCommand for (T) {
-        fn to_resp(&self) -> RespValue {
-            resp_array!["DEL", self]
-        }
-    }
-
+    // TODO - probably doesn't need to be a trait at all
     impl<'a, T: ToRespString> DelCommand for (&'a [T]) {
         fn to_resp(&self) -> RespValue {
             let mut keys = Vec::with_capacity(self.len() + 1);
@@ -196,26 +192,6 @@ mod commands {
 
             let count = core.run(connection).unwrap();
             assert_eq!(count, 3);
-        }
-
-        #[test]
-        fn del_test() {
-            let (mut core, connection) = setup();
-
-            let del_keys = "DEL_KEY";
-            let connection = connection.and_then(|connection| connection.del((del_keys)));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_string() {
-            let (mut core, connection) = setup();
-
-            let del_keys = String::from("DEL_KEY");
-            let connection = connection.and_then(|connection| connection.del((del_keys)));
-
-            let _ = core.run(connection).unwrap();
         }
 
         #[test]

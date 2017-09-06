@@ -53,12 +53,17 @@
 //! returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published
 //! to that topic.
 
+#![feature(trace_macros)]
+
 extern crate bytes;
 extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 
 #[macro_use]
-pub mod client;
-pub mod error;
 pub mod resp;
+
+#[macro_use]
+pub mod client;
+
+pub mod error;
