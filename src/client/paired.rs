@@ -109,14 +109,22 @@ mod commands {
 
     use super::SendBox;
 
+    macro_rules! resp_array {
+        ($($e:expr),*) => {
+            RespValue::Array(vec![
+                $(
+                    $e.to_resp_string(),
+                )*
+            ]);
+        }
+    }
+
     impl super::PairedConnection {
         pub fn append<K, V>(&self, (key, value): (K, V)) -> SendBox<usize>
             where K: ToRespString,
                   V: ToRespString
         {
-            self.send(RespValue::Array(vec!["APPEND".to_resp_string(),
-                                            key.to_resp_string(),
-                                            value.to_resp_string()]))
+            self.send(resp_array!["APPEND", key, value])
         }
     }
 
@@ -128,7 +136,7 @@ mod commands {
 
     impl<'a, T: ToRespString> DelCommand for (T) {
         fn to_resp(&self) -> RespValue {
-            RespValue::Array(vec!["DEL".to_resp_string(), self.to_resp_string()])
+            resp_array!["DEL", self]
         }
     }
 
