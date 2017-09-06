@@ -142,15 +142,40 @@ mod commands {
         simple_command!(bgsave, "BGSAVE", ());
     }
 
+    pub trait BitcountCommand {
+        fn to_cmd(&self) -> RespValue;
+    }
+
+    impl<T: ToRespString> BitcountCommand for (T) {
+        fn to_cmd(&self) -> RespValue {
+            resp_string_array!(self)
+        }
+    }
+
+    impl<T: ToRespString> BitcountCommand for (T, usize, usize) {
+        fn to_cmd(&self) -> RespValue {
+            unimplemented!()
+            //resp_array!(self.0, self.1, self.2)
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn bitcount<C>(&self, cmd: C) -> SendBox<usize>
+            where C: BitcountCommand
+        {
+            self.send(cmd.to_cmd())
+        }
+    }
+
     // MARKER - all accounted for above this line
 
     pub trait DelCommand {
-        fn to_resp(&self) -> RespValue;
+        fn to_cmd(&self) -> RespValue;
     }
 
     // TODO - probably doesn't need to be a trait at all
     impl<'a, T: ToRespString> DelCommand for (&'a [T]) {
-        fn to_resp(&self) -> RespValue {
+        fn to_cmd(&self) -> RespValue {
             let mut keys = Vec::with_capacity(self.len() + 1);
             keys.push("DEL".to_resp_string());
             keys.extend(self.iter().map(|key| key.to_resp_string()));
@@ -162,7 +187,17 @@ mod commands {
         pub fn del<C>(&self, cmd: C) -> SendBox<usize>
             where C: DelCommand
         {
-            self.send(cmd.to_resp())
+            self.send(cmd.to_cmd())
+        }
+    }
+
+    impl super::PairedConnection {
+        // TODO: incomplete implementation
+        pub fn set<K, V>(&self, (key, value): (K, V)) -> SendBox<()>
+            where K: ToRespString,
+                  V: ToRespString
+        {
+            self.send(resp_string_array![key, value])
         }
     }
 
@@ -241,6 +276,26 @@ mod commands {
             let connection = connection.and_then(|connection| connection.del((&del_keys[..])));
 
             let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn bitcount_test() {
+            let (mut core, connection) = setup();
+
+            let connection = connection.and_then(|connection| {
+                connection.set(("BITCOUNT_KEY", "foobar"));
+                let mut counts = Vec::new();
+                counts.push(connection.bitcount(("BITCOUNT_KEY")));
+                counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
+                counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
+                future::join_all(counts)
+            });
+
+            let counts = core.run(connection).unwrap();
+            assert_eq!(counts.len(), 3);
+            assert_eq!(counts[0], 26);
+            assert_eq!(counts[1], 4);
+            assert_eq!(counts[2], 6);
         }
     }
 }

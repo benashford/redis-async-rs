@@ -181,6 +181,16 @@ impl<T> ToResp for T
     }
 }
 
+pub trait ToRespInteger {
+    fn to_resp_integer(&self) -> RespValue;
+}
+
+impl ToRespInteger for usize {
+    fn to_resp_integer(&self) -> RespValue {
+        RespValue::Integer(*self)
+    }
+}
+
 /// Codec to read frames
 pub struct RespCodec;
 
