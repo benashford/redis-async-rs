@@ -127,12 +127,19 @@ mod commands {
             {
                 self.send(resp_string_array![ $k $(,$p)* ])
             }
-        }
+        };
+        ($n:ident,$k:expr,$r:ty) => {
+            pub fn $n(&self) -> SendBox<$r> {
+                self.send(resp_string_array![$k])
+            }
+        };
     }
 
     impl super::PairedConnection {
         simple_command!(append, "APPEND", [(key: K), (value: V)], usize);
         simple_command!(auth, "AUTH", [(password: P)], ());
+        simple_command!(bgrewriteaof, "BGREWRITEAOF", ());
+        simple_command!(bgsave, "BGSAVE", ());
     }
 
     // MARKER - all accounted for above this line
