@@ -123,17 +123,17 @@ mod commands {
         fn to_resp(&self) -> RespValue;
     }
 
-    impl<'a> DelCommand for (&'a str) {
+    impl<'a, T: ToRespString> DelCommand for (T) {
         fn to_resp(&self) -> RespValue {
             RespValue::Array(vec!["DEL".to_resp_string(), self.to_resp_string()])
         }
     }
 
-    impl<'a, S: AsRef<str>> DelCommand for (&'a [S]) {
+    impl<'a, T: ToRespString> DelCommand for (&'a [T]) {
         fn to_resp(&self) -> RespValue {
             let mut keys = Vec::with_capacity(self.len() + 1);
             keys.push("DEL".to_resp_string());
-            keys.extend(self.iter().map(|key| key.as_ref().to_resp_string()));
+            keys.extend(self.iter().map(|key| key.to_resp_string()));
             RespValue::Array(keys)
         }
     }
@@ -196,7 +196,7 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = String::from("DEL_KEY");
-            let connection = connection.and_then(|connection| connection.del((del_keys.as_str())));
+            let connection = connection.and_then(|connection| connection.del((del_keys)));
 
             let _ = core.run(connection).unwrap();
         }
