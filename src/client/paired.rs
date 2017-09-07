@@ -163,15 +163,15 @@ mod commands {
     // MARKER - all accounted for above this line
 
     pub trait DelCommand {
-        fn to_cmd(&self) -> RespValue;
+        fn to_cmd(self) -> RespValue;
     }
 
     // TODO - probably doesn't need to be a trait at all
-    impl<'a, T: ToRespString> DelCommand for (&'a [T]) {
-        fn to_cmd(&self) -> RespValue {
+    impl<'a, T: Into<RespValue>> DelCommand for (Vec<T>) {
+        fn to_cmd(self) -> RespValue {
             let mut keys = Vec::with_capacity(self.len() + 1);
             keys.push("DEL".to_resp_string());
-            keys.extend(self.iter().map(|key| key.to_resp_string()));
+            keys.extend(self.into_iter().map(|key| key.into()));
             RespValue::Array(keys)
         }
     }
@@ -209,7 +209,7 @@ mod commands {
             (core, super::super::paired_connect(&addr, &handle))
         }
 
-        fn setup_and_delete(keys: &[&str]) -> (Core, super::super::PairedConnectionBox) {
+        fn setup_and_delete(keys: Vec<&str>) -> (Core, super::super::PairedConnectionBox) {
             let (mut core, connection) = setup();
 
             let delete = connection.and_then(|connection| connection.del(keys).map(|_| connection));
@@ -220,7 +220,7 @@ mod commands {
 
         #[test]
         fn append_test() {
-            let (mut core, connection) = setup_and_delete(&["APPENDKEY"]);
+            let (mut core, connection) = setup_and_delete(vec!["APPENDKEY"]);
 
             let connection = connection
                 .and_then(|connection| connection.append(("APPENDKEY", "ABC")));
@@ -234,8 +234,7 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = vec!["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection
-                .and_then(|connection| connection.del((del_keys.as_slice())));
+            let connection = connection.and_then(|connection| connection.del((del_keys)));
 
             let _ = core.run(connection).unwrap();
         }
@@ -245,28 +244,7 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = vec![String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
-            let connection = connection
-                .and_then(|connection| connection.del((del_keys.as_slice())));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_ary() {
-            let (mut core, connection) = setup();
-
-            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection.and_then(|connection| connection.del((&del_keys[..])));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_ary_string() {
-            let (mut core, connection) = setup();
-
-            let del_keys = [String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
-            let connection = connection.and_then(|connection| connection.del((&del_keys[..])));
+            let connection = connection.and_then(|connection| connection.del((del_keys)));
 
             let _ = core.run(connection).unwrap();
         }

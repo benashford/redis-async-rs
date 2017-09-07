@@ -111,6 +111,20 @@ impl FromResp for () {
     }
 }
 
+/// Macro to create a RESP array, useful for preparing commands to send.  Elements can be any type, or a mixture
+/// of types, that satisfy `Into<RespValue>`.
+///
+/// # Examples
+///
+/// ```
+/// #[macro_use]
+/// extern crate redis_async;
+///
+/// fn main() {
+///     let value = format!("something_{}", 123);
+///     resp_array!["SET", "key_name", value];
+/// }
+/// ```
 #[macro_export]
 macro_rules! resp_array {
     ($($e:expr),*) => {
@@ -136,7 +150,7 @@ macro_rules! into_resp {
 
 /// A specific trait to convert into a `RespValue::BulkString`
 pub trait ToRespString {
-    fn to_resp_string(&self) -> RespValue;
+    fn to_resp_string(self) -> RespValue;
 }
 
 macro_rules! string_into_resp {
@@ -146,42 +160,42 @@ macro_rules! string_into_resp {
 }
 
 impl ToRespString for String {
-    fn to_resp_string(&self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self.into_bytes())
     }
 }
 string_into_resp!(String);
 
 impl<'a> ToRespString for &'a String {
-    fn to_resp_string(&self) -> RespValue {
+    fn to_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
 string_into_resp!(&'a String);
 
 impl<'a> ToRespString for &'a str {
-    fn to_resp_string(&self) -> RespValue {
+    fn to_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
 string_into_resp!(&'a str);
 
 impl<'a> ToRespString for &'a [u8] {
-    fn to_resp_string(&self) -> RespValue {
+    fn to_resp_string(self) -> RespValue {
         RespValue::BulkString(self.to_vec())
     }
 }
 string_into_resp!(&'a [u8]);
 
 impl ToRespString for Vec<u8> {
-    fn to_resp_string(&self) -> RespValue {
-        RespValue::BulkString(self.clone())
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self)
     }
 }
 string_into_resp!(Vec<u8>);
 
 pub trait ToRespInteger {
-    fn to_resp_integer(&self) -> RespValue;
+    fn to_resp_integer(self) -> RespValue;
 }
 
 macro_rules! integer_into_resp {
@@ -191,8 +205,8 @@ macro_rules! integer_into_resp {
 }
 
 impl ToRespInteger for usize {
-    fn to_resp_integer(&self) -> RespValue {
-        RespValue::Integer(*self)
+    fn to_resp_integer(self) -> RespValue {
+        RespValue::Integer(self)
     }
 }
 integer_into_resp!(usize);
