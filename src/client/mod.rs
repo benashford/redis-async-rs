@@ -134,7 +134,7 @@ mod test {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
                 let key = format!("X_{}", i);
-                faf!(connection.send(resp_array!["SET", key, i.to_string()]));
+                faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
                 futures.push(connection.send(resp_array!["GET", key]));
             }
             futures.remove(999)

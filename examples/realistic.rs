@@ -49,7 +49,7 @@ fn main() {
                     .and_then(move |ctr:String| {
                                   let key = format!("rt_{}", ctr);
                                   let d_val = data.0.to_string();
-                                  faf!(connection_inner.send(resp_array!["SET", key, d_val]));
+                                  faf!(connection_inner.send(resp_array!["SET", &key, d_val]));
                                   connection_inner.send(resp_array!["SET", data.1, key])
                               })
             });

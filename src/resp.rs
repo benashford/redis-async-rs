@@ -111,35 +111,25 @@ impl FromResp for () {
     }
 }
 
-/// A trait to be implemented on types that can be automatically converted into `RespValue`s.
-///
-/// A `From<T>` where `T: ToResp` has been implemented so that everything that implements `ToResp`
-/// can be converted with conversion traits.
-pub trait ToResp {
-    fn to_resp(&self) -> RespValue;
-}
-
-impl<T: ToResp> From<T> for RespValue {
-    fn from(from: T) -> RespValue {
-        from.to_resp()
-    }
-}
-
-/// Standalone function for converting into Resp Arrays
-pub fn to_resp_array<T: ToResp>(data: &[T]) -> RespValue {
-    RespValue::Array(data.into_iter().map(|d| d.to_resp()).collect())
-}
-
 #[macro_export]
 macro_rules! resp_array {
     ($($e:expr),*) => {
         {
-            use $crate::resp::ToResp;
             $crate::resp::RespValue::Array(vec![
                 $(
-                    $e.to_resp(),
+                    $e.into(),
                 )*
             ])
+        }
+    }
+}
+
+macro_rules! into_resp {
+    ($t:ty,$f:ident) => {
+        impl<'a> From<$t> for RespValue {
+            fn from(from: $t) -> RespValue {
+                from.$f()
+            }
         }
     }
 }
@@ -149,40 +139,55 @@ pub trait ToRespString {
     fn to_resp_string(&self) -> RespValue;
 }
 
+macro_rules! string_into_resp {
+    ($t:ty) => {
+        into_resp!($t, to_resp_string);
+    }
+}
+
 impl ToRespString for String {
     fn to_resp_string(&self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
+string_into_resp!(String);
+
+impl<'a> ToRespString for &'a String {
+    fn to_resp_string(&self) -> RespValue {
+        RespValue::BulkString(self.as_bytes().into())
+    }
+}
+string_into_resp!(&'a String);
 
 impl<'a> ToRespString for &'a str {
     fn to_resp_string(&self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
+string_into_resp!(&'a str);
 
 impl<'a> ToRespString for &'a [u8] {
     fn to_resp_string(&self) -> RespValue {
         RespValue::BulkString(self.to_vec())
     }
 }
+string_into_resp!(&'a [u8]);
 
 impl ToRespString for Vec<u8> {
     fn to_resp_string(&self) -> RespValue {
         RespValue::BulkString(self.clone())
     }
 }
-
-impl<T> ToResp for T
-    where T: ToRespString
-{
-    fn to_resp(&self) -> RespValue {
-        self.to_resp_string()
-    }
-}
+string_into_resp!(Vec<u8>);
 
 pub trait ToRespInteger {
     fn to_resp_integer(&self) -> RespValue;
+}
+
+macro_rules! integer_into_resp {
+    ($t:ty) => {
+        into_resp!($t, to_resp_integer);
+    }
 }
 
 impl ToRespInteger for usize {
@@ -190,6 +195,7 @@ impl ToRespInteger for usize {
         RespValue::Integer(*self)
     }
 }
+integer_into_resp!(usize);
 
 /// Codec to read frames
 pub struct RespCodec;

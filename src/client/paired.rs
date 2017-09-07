@@ -92,9 +92,13 @@ impl PairedConnection {
     {
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
+
         queue.push_back(tx);
+
+        let full_msg = msg.into();
+        println!("Full message: {:?}", full_msg);
         self.out_tx
-            .unbounded_send(msg.into())
+            .unbounded_send(full_msg)
             .expect("Failed to send");
         let future = rx.then(|v| match v {
                                  Ok(v) => future::result(T::from_resp(v)),
@@ -109,28 +113,18 @@ mod commands {
 
     use super::SendBox;
 
-    macro_rules! resp_string_array {
-        ($($e:expr),*) => {
-            RespValue::Array(vec![
-                $(
-                    $e.to_resp_string(),
-                )*
-            ]);
-        }
-    }
-
     // TODO - check the expansion regarding trailing commas, etc.
     macro_rules! simple_command {
         ($n:ident,$k:expr,[ $(($p:ident : $t:ident)),* ],$r:ty) => {
             pub fn $n< $($t,)* >(&self, ($($p,)*): ($($t,)*)) -> SendBox<$r>
-            where $($t: ToRespString,)*
+            where $($t: ToRespString + Into<RespValue>,)*
             {
-                self.send(resp_string_array![ $k $(,$p)* ])
+                self.send(resp_array![ $k $(,$p)* ])
             }
         };
         ($n:ident,$k:expr,$r:ty) => {
             pub fn $n(&self) -> SendBox<$r> {
-                self.send(resp_string_array![$k])
+                self.send(resp_array![$k])
             }
         };
     }
@@ -143,19 +137,18 @@ mod commands {
     }
 
     pub trait BitcountCommand {
-        fn to_cmd(&self) -> RespValue;
+        fn to_cmd(self) -> RespValue;
     }
 
-    impl<T: ToRespString> BitcountCommand for (T) {
-        fn to_cmd(&self) -> RespValue {
-            resp_string_array!(self)
+    impl<T: ToRespString + Into<RespValue>> BitcountCommand for (T) {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITCOUNT", self]
         }
     }
 
-    impl<T: ToRespString> BitcountCommand for (T, usize, usize) {
-        fn to_cmd(&self) -> RespValue {
-            unimplemented!()
-            //resp_array!(self.0, self.1, self.2)
+    impl<T: ToRespString + Into<RespValue>> BitcountCommand for (T, usize, usize) {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITCOUNT", self.0, self.1.to_string(), self.2.to_string()]
         }
     }
 
@@ -194,10 +187,10 @@ mod commands {
     impl super::PairedConnection {
         // TODO: incomplete implementation
         pub fn set<K, V>(&self, (key, value): (K, V)) -> SendBox<()>
-            where K: ToRespString,
-                  V: ToRespString
+            where K: ToRespString + Into<RespValue>,
+                  V: ToRespString + Into<RespValue>
         {
-            self.send(resp_string_array![key, value])
+            self.send(resp_array!["SET", key, value])
         }
     }
 
@@ -283,12 +276,15 @@ mod commands {
             let (mut core, connection) = setup();
 
             let connection = connection.and_then(|connection| {
-                connection.set(("BITCOUNT_KEY", "foobar"));
-                let mut counts = Vec::new();
-                counts.push(connection.bitcount(("BITCOUNT_KEY")));
-                counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
-                counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
-                future::join_all(counts)
+                connection
+                    .set(("BITCOUNT_KEY", "foobar"))
+                    .and_then(move |_| {
+                                  let mut counts = Vec::new();
+                                  counts.push(connection.bitcount(("BITCOUNT_KEY")));
+                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
+                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
+                                  future::join_all(counts)
+                              })
             });
 
             let counts = core.run(connection).unwrap();
