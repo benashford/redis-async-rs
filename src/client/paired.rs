@@ -109,6 +109,8 @@ impl PairedConnection {
 }
 
 mod commands {
+    use std::mem;
+
     use resp::{ToRespString, RespValue};
 
     use super::SendBox;
@@ -167,11 +169,33 @@ mod commands {
     }
 
     // TODO - probably doesn't need to be a trait at all
-    impl<'a, T: Into<RespValue>> DelCommand for (Vec<T>) {
+    impl<'a, T: ToRespString + Into<RespValue>> DelCommand for (Vec<T>) {
         fn to_cmd(self) -> RespValue {
             let mut keys = Vec::with_capacity(self.len() + 1);
-            keys.push("DEL".to_resp_string());
+            keys.push("DEL".into());
             keys.extend(self.into_iter().map(|key| key.into()));
+            RespValue::Array(keys)
+        }
+    }
+
+    impl<'a, T: ToRespString + ToOwned<Owned = T> + Into<RespValue>> DelCommand for (&'a [T]) {
+        fn to_cmd(self) -> RespValue {
+            let mut keys = Vec::with_capacity(self.len() + 1);
+            keys.push("DEL".into());
+            keys.extend(self.into_iter().map(|key| key.to_owned().into()));
+            RespValue::Array(keys)
+        }
+    }
+
+    // TODO - need a macro or something to create default options for sensible arrays
+    impl<'a, T: ToRespString + Into<RespValue>> DelCommand for ([T; 1]) {
+        fn to_cmd(mut self) -> RespValue {
+            let mut keys = Vec::with_capacity(2);
+            keys.push("DEL".into());
+            {
+                let value = unsafe { mem::replace(&mut self[0], mem::uninitialized()) };
+                keys.push(value.into());
+            }
             RespValue::Array(keys)
         }
     }
@@ -234,7 +258,7 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = vec!["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection.and_then(|connection| connection.del((del_keys)));
+            let connection = connection.and_then(|connection| connection.del(del_keys));
 
             let _ = core.run(connection).unwrap();
         }
@@ -244,7 +268,37 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = vec![String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
-            let connection = connection.and_then(|connection| connection.del((del_keys)));
+            let connection = connection.and_then(|connection| connection.del(del_keys));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_slice() {
+            let (mut core, connection) = setup();
+
+            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
+            let connection = connection.and_then(|connection| connection.del(&del_keys[..]));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_slice_string() {
+            let (mut core, connection) = setup();
+
+            let del_keys = [String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
+            let connection = connection.and_then(|connection| connection.del(&del_keys[..]));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_ary() {
+            let (mut core, connection) = setup();
+
+            let del_keys = ["DEL_KEY_1"];
+            let connection = connection.and_then(|connection| connection.del(del_keys));
 
             let _ = core.run(connection).unwrap();
         }
@@ -258,7 +312,7 @@ mod commands {
                     .set(("BITCOUNT_KEY", "foobar"))
                     .and_then(move |_| {
                                   let mut counts = Vec::new();
-                                  counts.push(connection.bitcount(("BITCOUNT_KEY")));
+                                  counts.push(connection.bitcount("BITCOUNT_KEY"));
                                   counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
                                   counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
                                   future::join_all(counts)
