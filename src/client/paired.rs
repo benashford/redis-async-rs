@@ -111,6 +111,9 @@ impl PairedConnection {
 mod commands {
     use std::mem;
 
+    use futures::future;
+
+    use error;
     use resp::{ToRespString, RespValue};
 
     use super::SendBox;
@@ -204,7 +207,12 @@ mod commands {
         pub fn del<C>(&self, cmd: C) -> SendBox<usize>
             where C: DelCommand
         {
-            self.send(cmd.to_cmd())
+            let cmd = cmd.to_cmd();
+            if cmd.array_len() > 1 {
+                self.send(cmd)
+            } else {
+                Box::new(future::err(error::internal("DEL command needs at least one key")))
+            }
         }
     }
 
@@ -224,6 +232,8 @@ mod commands {
         use futures::Future;
 
         use tokio_core::reactor::Core;
+
+        use super::super::error::Error;
 
         fn setup() -> (Core, super::super::PairedConnectionBox) {
             let core = Core::new().unwrap();
@@ -301,6 +311,21 @@ mod commands {
             let connection = connection.and_then(|connection| connection.del(del_keys));
 
             let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_not_enough_keys() {
+            let (mut core, connection) = setup();
+
+            let del_keys: Vec<String> = vec![];
+            let connection = connection.and_then(|connection| connection.del(del_keys));
+
+            let result = core.run(connection);
+            if let &Err(Error::Internal(ref msg)) = &result {
+                assert_eq!("DEL command needs at least one key", msg);
+            } else {
+                panic!("Should have errored: {:?}", result);
+            }
         }
 
         #[test]

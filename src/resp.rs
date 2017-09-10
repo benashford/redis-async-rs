@@ -49,6 +49,14 @@ impl RespValue {
             x => Ok(x),
         }
     }
+
+    pub fn array_len(&self) -> usize {
+        if let &RespValue::Array(ref arr) = self {
+            arr.len()
+        } else {
+            panic!("Not an array");
+        }
+    }
 }
 
 /// A trait to be implemented for every time which can be read from a RESP value.
