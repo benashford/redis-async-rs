@@ -311,7 +311,7 @@ mod commands {
     }
 
     impl super::PairedConnection {
-        pub fn bitfield<K>(&self, (key, cmds): (K, &BitfieldCommands)) -> SendBox<Vec<usize>>
+        pub fn bitfield<K>(&self, (key, cmds): (K, &BitfieldCommands)) -> SendBox<Vec<Option<i64>>>
             where K: ToRespString + Into<RespValue>
         {
             self.send(cmds.to_cmd(key.into()))
@@ -458,8 +458,25 @@ mod commands {
 
             let results = core.run(connection).unwrap();
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0], 1);
-            assert_eq!(results[1], 1);
+            assert_eq!(results[0], Some(1));
+            assert_eq!(results[1], Some(1));
+        }
+
+        #[test]
+        fn bitfield_nil_response() {
+            let (mut core, connection) = setup_and_delete(vec!["BITFIELD_NIL_KEY"]);
+
+            let connection = connection.and_then(|connection| {
+                let mut bitfield_commands = BitfieldCommands::new();
+                bitfield_commands.overflow(BitfieldOverflow::Fail);
+                bitfield_commands.incrby(BitfieldOffset::Bits(102),
+                                         BitfieldTypeAndValue::Unsigned(2, 4));
+                connection.bitfield(("BITFIELD_NIL_KEY", &bitfield_commands))
+            });
+
+            let results = core.run(connection).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0], None);
         }
 
         #[test]

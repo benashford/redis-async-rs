@@ -27,6 +27,8 @@ use super::error::Error;
 /// single-subscriber enforcement would make more sense, or sharing via `Arc`
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RespValue {
+    Nil,
+
     /// Zero, one or more other `RespValue`s.
     Array(Vec<RespValue>),
 
@@ -37,7 +39,7 @@ pub enum RespValue {
     /// An error from the Redis server
     Error(String),
 
-    Integer(usize),
+    Integer(i64),
 
     SimpleString(String),
 }
@@ -90,11 +92,26 @@ impl FromResp for String {
     }
 }
 
-impl FromResp for usize {
-    fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
+impl FromResp for i64 {
+    fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
         match resp {
             RespValue::Integer(i) => Ok(i),
             _ => Err(error::resp("Cannot be converted into a usize", resp)),
+        }
+    }
+}
+
+impl FromResp for usize {
+    fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
+        i64::from_resp_int(resp).map(|x| x as usize)
+    }
+}
+
+impl<T: FromResp> FromResp for Option<T> {
+    fn from_resp_int(resp: RespValue) -> Result<Option<T>, Error> {
+        match resp {
+            RespValue::Nil => Ok(None),
+            x => Ok(Some(T::from_resp_int(x)?)),
         }
     }
 }
@@ -228,7 +245,7 @@ macro_rules! integer_into_resp {
 
 impl ToRespInteger for usize {
     fn to_resp_integer(self) -> RespValue {
-        RespValue::Integer(self)
+        RespValue::Integer(self as i64)
     }
 }
 integer_into_resp!(usize);
@@ -248,7 +265,7 @@ fn check_and_reserve(buf: &mut BytesMut, amt: usize) {
     }
 }
 
-fn write_header(symb: u8, len: usize, buf: &mut BytesMut) {
+fn write_header(symb: u8, len: i64, buf: &mut BytesMut) {
     let len_as_string = len.to_string();
     let len_as_bytes = len_as_string.as_bytes();
     let header_bytes = 1 + len_as_bytes.len() + 2;
@@ -273,15 +290,18 @@ impl Encoder for RespCodec {
 
     fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match msg {
+            RespValue::Nil => {
+                write_header(b'$', -1, buf);
+            }
             RespValue::Array(ary) => {
-                write_header(b'*', ary.len(), buf);
+                write_header(b'*', ary.len() as i64, buf);
                 for v in ary {
                     self.encode(v, buf)?;
                 }
             }
             RespValue::BulkString(bstr) => {
                 let len = bstr.len();
-                write_header(b'$', len, buf);
+                write_header(b'$', len as i64, buf);
                 check_and_reserve(buf, len + 2);
                 buf.extend(bstr);
                 write_rn(buf);
@@ -325,6 +345,7 @@ fn scan_integer<'a>(buf: &'a mut BytesMut, idx: usize) -> Result<Option<(usize, 
             (true, b'\n') => return Ok(Some((pos + 1, &buf[idx..pos - 1]))),
             (false, b'\r') => at_end = true,
             (false, b'0'...b'9') => (),
+            (false, b'-') => (),
             (_, val) => return Err(parse_error(format!("Unexpected byte in size_string: {}", val))),
         }
         pos += 1;
@@ -352,11 +373,11 @@ fn scan_string(buf: &mut BytesMut, idx: usize) -> Option<(usize, String)> {
     }
 }
 
-fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, usize)>, Error> {
+fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, i64)>, Error> {
     match scan_integer(buf, idx) {
         Ok(None) => Ok(None),
         Ok(Some((pos, int_str))) => {
-            let int: usize = str::from_utf8(int_str)
+            let int: i64 = str::from_utf8(int_str)
                 .expect("Not a string")
                 .parse()
                 .expect("Not an integer");
@@ -371,7 +392,9 @@ type DecodeResult = Result<Option<(usize, RespValue)>, Error>;
 fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
-        Ok(Some((pos, size))) => {
+        Ok(Some((pos, -1))) => Ok(Some((pos, RespValue::Nil))),
+        Ok(Some((pos, size))) if size >= 0 => {
+            let size = size as usize;
             let remaining = buf.len() - pos;
             let required_bytes = size + 2;
 
@@ -382,6 +405,7 @@ fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
             let bulk_string = RespValue::BulkString(buf[pos..(pos + size)].to_vec());
             Ok(Some((pos + required_bytes, bulk_string)))
         }
+        Ok(Some((_, size))) => Err(parse_error(format!("Invalid string size: {}", size))),
         Err(e) => Err(e),
     }
 }
@@ -390,6 +414,7 @@ fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
         Ok(Some((pos, size))) => {
+            let size = size as usize;
             let mut pos = pos;
             let mut values = Vec::with_capacity(size);
             for _ in 0..size {
@@ -495,5 +520,15 @@ mod tests {
 
         let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
         assert_eq!(deserialized, resp_object);
+    }
+
+    #[test]
+    fn test_nil_string() {
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(&b"$-1\r\n"[..]);
+
+        let mut codec = RespCodec;
+        let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
+        assert_eq!(deserialized, RespValue::Nil);
     }
 }
