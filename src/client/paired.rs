@@ -169,6 +169,7 @@ mod commands {
         cmds: Vec<BitfieldCommand>,
     }
 
+    #[derive(Clone)]
     pub enum BitfieldCommand {
         Set(BitfieldOffset, BitfieldTypeAndValue),
         Get(BitfieldOffset, BitfieldType),
@@ -204,6 +205,7 @@ mod commands {
         }
     }
 
+    #[derive(Copy, Clone)]
     pub enum BitfieldType {
         Signed(usize),
         Unsigned(usize),
@@ -219,6 +221,7 @@ mod commands {
         }
     }
 
+    #[derive(Copy, Clone)]
     pub enum BitfieldOverflow {
         Wrap,
         Sat,
@@ -236,6 +239,7 @@ mod commands {
         }
     }
 
+    #[derive(Clone)]
     pub enum BitfieldTypeAndValue {
         Signed(usize, isize),
         Unsigned(usize, usize),
@@ -259,6 +263,7 @@ mod commands {
         }
     }
 
+    #[derive(Clone)]
     pub enum BitfieldOffset {
         Bits(usize),
         Positional(usize),

@@ -96,7 +96,7 @@ impl FromResp for i64 {
     fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
         match resp {
             RespValue::Integer(i) => Ok(i),
-            _ => Err(error::resp("Cannot be converted into a usize", resp)),
+            _ => Err(error::resp("Cannot be converted into an i64", resp)),
         }
     }
 }
@@ -377,11 +377,17 @@ fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, i
     match scan_integer(buf, idx) {
         Ok(None) => Ok(None),
         Ok(Some((pos, int_str))) => {
-            let int: i64 = str::from_utf8(int_str)
-                .expect("Not a string")
-                .parse()
-                .expect("Not an integer");
-            Ok(Some((pos, int)))
+            // Redis integers are transmitted as strings, so we first convert the raw bytes into a string...
+            match str::from_utf8(int_str) {
+                Ok(string) => {
+                    // ...and then parse the string.
+                    match string.parse() {
+                        Ok(int) => Ok(Some((pos, int))),
+                        Err(_) => Err(parse_error(format!("Not an integer: {}", string))),
+                    }
+                }
+                Err(_) => Err(parse_error(format!("Not a valid string: {:?}", int_str))),
+            }
         }
         Err(e) => Err(e),
     }
