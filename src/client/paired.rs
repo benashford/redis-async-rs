@@ -165,6 +165,159 @@ mod commands {
         }
     }
 
+    pub struct BitfieldCommands {
+        cmds: Vec<BitfieldCommand>,
+    }
+
+    pub enum BitfieldCommand {
+        Set(BitfieldOffset, BitfieldTypeAndValue),
+        Get(BitfieldOffset, BitfieldType),
+        Incrby(BitfieldOffset, BitfieldTypeAndValue),
+        Overflow(BitfieldOverflow),
+    }
+
+    impl BitfieldCommand {
+        fn add_to_cmd(&self, cmds: &mut Vec<RespValue>) {
+            match self {
+                &BitfieldCommand::Set(ref offset, ref type_and_value) => {
+                    cmds.push("SET".into());
+                    cmds.push(type_and_value.type_cmd());
+                    cmds.push(offset.to_cmd());
+                    cmds.push(type_and_value.value_cmd());
+                }
+                &BitfieldCommand::Get(ref offset, ref ty) => {
+                    cmds.push("GET".into());
+                    cmds.push(ty.to_cmd());
+                    cmds.push(offset.to_cmd());
+                }
+                &BitfieldCommand::Incrby(ref offset, ref type_and_value) => {
+                    cmds.push("INCRBY".into());
+                    cmds.push(type_and_value.type_cmd());
+                    cmds.push(offset.to_cmd());
+                    cmds.push(type_and_value.value_cmd());
+                }
+                &BitfieldCommand::Overflow(ref overflow) => {
+                    cmds.push("OVERFLOW".into());
+                    cmds.push(overflow.to_cmd());
+                }
+            }
+        }
+    }
+
+    pub enum BitfieldType {
+        Signed(usize),
+        Unsigned(usize),
+    }
+
+    impl BitfieldType {
+        fn to_cmd(&self) -> RespValue {
+            match self {
+                    &BitfieldType::Signed(size) => format!("i{}", size),
+                    &BitfieldType::Unsigned(size) => format!("u{}", size),
+                }
+                .into()
+        }
+    }
+
+    pub enum BitfieldOverflow {
+        Wrap,
+        Sat,
+        Fail,
+    }
+
+    impl BitfieldOverflow {
+        fn to_cmd(&self) -> RespValue {
+            match self {
+                    &BitfieldOverflow::Wrap => "WRAP",
+                    &BitfieldOverflow::Sat => "SAT",
+                    &BitfieldOverflow::Fail => "FAIL",
+                }
+                .into()
+        }
+    }
+
+    pub enum BitfieldTypeAndValue {
+        Signed(usize, isize),
+        Unsigned(usize, usize),
+    }
+
+    impl BitfieldTypeAndValue {
+        fn type_cmd(&self) -> RespValue {
+            match self {
+                    &BitfieldTypeAndValue::Signed(size, _) => format!("i{}", size),
+                    &BitfieldTypeAndValue::Unsigned(size, _) => format!("u{}", size),
+                }
+                .into()
+        }
+
+        fn value_cmd(&self) -> RespValue {
+            match self {
+                    &BitfieldTypeAndValue::Signed(_, amt) => amt.to_string(),
+                    &BitfieldTypeAndValue::Unsigned(_, amt) => amt.to_string(),
+                }
+                .into()
+        }
+    }
+
+    pub enum BitfieldOffset {
+        Bits(usize),
+        Positional(usize),
+    }
+
+    impl BitfieldOffset {
+        fn to_cmd(&self) -> RespValue {
+            match self {
+                    &BitfieldOffset::Bits(size) => size.to_string(),
+                    &BitfieldOffset::Positional(size) => format!("#{}", size),
+                }
+                .into()
+        }
+    }
+
+    impl BitfieldCommands {
+        pub fn new() -> Self {
+            BitfieldCommands { cmds: Vec::new() }
+        }
+
+        pub fn set(&mut self, offset: BitfieldOffset, value: BitfieldTypeAndValue) -> &mut Self {
+            self.cmds.push(BitfieldCommand::Set(offset, value));
+            self
+        }
+
+        pub fn get(&mut self, offset: BitfieldOffset, ty: BitfieldType) -> &mut Self {
+            self.cmds.push(BitfieldCommand::Get(offset, ty));
+            self
+        }
+
+        pub fn incrby(&mut self, offset: BitfieldOffset, value: BitfieldTypeAndValue) -> &mut Self {
+            self.cmds.push(BitfieldCommand::Incrby(offset, value));
+            self
+        }
+
+        pub fn overflow(&mut self, overflow: BitfieldOverflow) -> &mut Self {
+            self.cmds.push(BitfieldCommand::Overflow(overflow));
+            self
+        }
+
+        fn to_cmd(&self, key: RespValue) -> RespValue {
+            let mut cmd = Vec::new();
+            cmd.push("BITFIELD".into());
+            cmd.push(key);
+            for subcmd in self.cmds.iter() {
+                subcmd.add_to_cmd(&mut cmd);
+            }
+            RespValue::Array(cmd)
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn bitfield<K>(&self, (key, cmds): (K, &BitfieldCommands)) -> SendBox<Vec<usize>>
+            where K: ToRespString + Into<RespValue>
+        {
+            self.send(cmds.to_cmd(key.into()))
+        }
+    }
+
     // MARKER - all accounted for above this line
 
     pub trait DelCommand {
@@ -233,6 +386,8 @@ mod commands {
 
         use tokio_core::reactor::Core;
 
+        use super::{BitfieldCommands, BitfieldTypeAndValue, BitfieldOffset, BitfieldOverflow};
+
         use super::super::error::Error;
 
         fn setup() -> (Core, super::super::PairedConnectionBox) {
@@ -261,6 +416,50 @@ mod commands {
 
             let count = core.run(connection).unwrap();
             assert_eq!(count, 3);
+        }
+
+        #[test]
+        fn bitcount_test() {
+            let (mut core, connection) = setup();
+
+            let connection = connection.and_then(|connection| {
+                connection
+                    .set(("BITCOUNT_KEY", "foobar"))
+                    .and_then(move |_| {
+                                  let mut counts = Vec::new();
+                                  counts.push(connection.bitcount("BITCOUNT_KEY"));
+                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
+                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
+                                  future::join_all(counts)
+                              })
+            });
+
+            let counts = core.run(connection).unwrap();
+            assert_eq!(counts.len(), 3);
+            assert_eq!(counts[0], 26);
+            assert_eq!(counts[1], 4);
+            assert_eq!(counts[2], 6);
+        }
+
+        #[test]
+        fn bitfield_test() {
+            let (mut core, connection) = setup_and_delete(vec!["BITFIELD_KEY"]);
+
+            let connection = connection.and_then(|connection| {
+                let mut bitfield_commands = BitfieldCommands::new();
+                bitfield_commands.incrby(BitfieldOffset::Bits(100),
+                                         BitfieldTypeAndValue::Unsigned(2, 1));
+                bitfield_commands.overflow(BitfieldOverflow::Sat);
+                bitfield_commands.incrby(BitfieldOffset::Bits(102),
+                                         BitfieldTypeAndValue::Unsigned(2, 1));
+
+                connection.bitfield(("BITFIELD_KEY", &bitfield_commands))
+            });
+
+            let results = core.run(connection).unwrap();
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0], 1);
+            assert_eq!(results[1], 1);
         }
 
         #[test]
@@ -326,29 +525,6 @@ mod commands {
             } else {
                 panic!("Should have errored: {:?}", result);
             }
-        }
-
-        #[test]
-        fn bitcount_test() {
-            let (mut core, connection) = setup();
-
-            let connection = connection.and_then(|connection| {
-                connection
-                    .set(("BITCOUNT_KEY", "foobar"))
-                    .and_then(move |_| {
-                                  let mut counts = Vec::new();
-                                  counts.push(connection.bitcount("BITCOUNT_KEY"));
-                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
-                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
-                                  future::join_all(counts)
-                              })
-            });
-
-            let counts = core.run(connection).unwrap();
-            assert_eq!(counts.len(), 3);
-            assert_eq!(counts[0], 26);
-            assert_eq!(counts[1], 4);
-            assert_eq!(counts[2], 6);
         }
     }
 }

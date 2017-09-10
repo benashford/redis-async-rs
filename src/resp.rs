@@ -93,9 +93,23 @@ impl FromResp for String {
 impl FromResp for usize {
     fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
         match resp {
-            RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i),
             _ => Err(error::resp("Cannot be converted into a usize", resp)),
+        }
+    }
+}
+
+impl<T: FromResp> FromResp for Vec<T> {
+    fn from_resp_int(resp: RespValue) -> Result<Vec<T>, Error> {
+        match resp {
+            RespValue::Array(ary) => {
+                let mut ar = Vec::with_capacity(ary.len());
+                for value in ary {
+                    ar.push(T::from_resp(value)?);
+                }
+                Ok(ar)
+            }
+            _ => Err(error::resp("Cannot be converted into a vector", resp)),
         }
     }
 }
