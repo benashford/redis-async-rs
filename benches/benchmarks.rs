@@ -14,6 +14,8 @@ extern crate test;
 
 extern crate futures;
 extern crate tokio_core;
+
+#[macro_use]
 extern crate redis_async;
 
 use std::sync::Arc;
@@ -35,9 +37,9 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
     let connection = core.run(connection).unwrap();
 
     b.iter(|| {
-               connection.send_and_forget(["SET", "test_key", "42"].as_ref());
-               let get = connection.send(["GET", "test_key"].as_ref());
-               let del = connection.send(["DEL", "test_key"].as_ref());
+               faf!(connection.send(resp_array!["SET", "test_key", "42"]));
+               let get = connection.send(resp_array!["GET", "test_key"]);
+               let del = connection.send(resp_array!["DEL", "test_key"]);
                let get_set = get.join(del);
                let (_, _): (String, String) = core.run(get_set).unwrap();
            });
@@ -56,12 +58,12 @@ fn bench_big_pipeline(b: &mut Bencher) {
     b.iter(|| {
         for x in 0..data_size {
             let test_key = format!("test_{}", x);
-            connection.send_and_forget(["SET", &test_key, &x.to_string()].as_ref());
+            faf!(connection.send(resp_array!["SET", test_key, x.to_string()]));
         }
         let mut gets = Vec::with_capacity(data_size);
         for x in 0..data_size {
             let test_key = format!("test_{}", x);
-            gets.push(connection.send(["GET", &test_key].as_ref()));
+            gets.push(connection.send(resp_array!["GET", test_key]));
         }
         let last_get = gets.remove(data_size - 1);
         let _:String = core.run(last_get).unwrap();
@@ -82,10 +84,10 @@ fn bench_complex_pipeline(b: &mut Bencher) {
         let sets = (0..data_size).map(|x| {
             let connection_inner = connection.clone();
             connection
-                .send(["INCR", "id_gen"].as_ref())
+                .send(resp_array!["INCR", "id_gen"])
                 .and_then(move |id: String| {
                               let id = format!("id_{}", id);
-                              connection_inner.send(["SET", &id, &x.to_string()].as_ref())
+                              connection_inner.send(resp_array!["SET", &id, &x.to_string()])
                           })
         });
         let all_sets = futures::future::join_all(sets);

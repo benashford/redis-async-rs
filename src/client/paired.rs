@@ -96,7 +96,6 @@ impl PairedConnection {
         queue.push_back(tx);
 
         let full_msg = msg.into();
-        println!("Full message: {:?}", full_msg);
         self.out_tx
             .unbounded_send(full_msg)
             .expect("Failed to send");
@@ -108,6 +107,16 @@ impl PairedConnection {
     }
 }
 
+#[cfg(feature="commands")]
+///
+/// Implementing Redis commands as specific Rust functions, intended to be easier to use that manually constructing
+/// each as appropriate.
+///
+/// Warning: this is still subject to change.  Only a subset of commands are implemented so far, and not done so
+/// consistently.  This is ongoing to test various options, a winner will be picked in due course.
+///
+/// Protected by a feature flag until the above issues are satisfied.
+///
 mod commands {
     use std::mem;
 
