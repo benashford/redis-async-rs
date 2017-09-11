@@ -92,6 +92,15 @@ impl FromResp for String {
     }
 }
 
+impl FromResp for Vec<u8> {
+    fn from_resp_int(resp: RespValue) -> Result<Vec<u8>, Error> {
+        match resp {
+            RespValue::BulkString(bytes) => Ok(bytes),
+            _ => Err(error::resp("Not a bulk string", resp)),
+        }
+    }
+}
+
 impl FromResp for i64 {
     fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
         match resp {
