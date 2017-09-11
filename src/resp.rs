@@ -23,8 +23,7 @@ use super::error::Error;
 /// A single RESP value, this owns the data that is read/to-be written to Redis.
 ///
 /// It is cloneable to allow multiple copies to be delivered in certain circumstances, e.g. multiple
-/// subscribers to the same topic. TODO - revisit this assumption to make sure its sound, perhaps a
-/// single-subscriber enforcement would make more sense, or sharing via `Arc`
+/// subscribers to the same topic.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RespValue {
     Nil,
@@ -39,6 +38,8 @@ pub enum RespValue {
     /// An error from the Redis server
     Error(String),
 
+    /// Redis documentation defines an integer as being a signed 64-bit integer:
+    /// https://redis.io/topics/protocol#resp-integers
     Integer(i64),
 
     SimpleString(String),
