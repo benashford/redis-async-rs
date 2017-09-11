@@ -10,6 +10,7 @@
 
 extern crate futures;
 extern crate tokio_core;
+#[macro_use]
 extern crate redis_async;
 
 use std::env;
@@ -31,7 +32,7 @@ fn main() {
 
     let monitor = client::connect(&addr, &core.handle()).map_err(|e| e.into()).and_then(|connection| {
         let client::ClientConnection { sender, receiver } = connection;
-        sender.send(["MONITOR"].as_ref().into())
+        sender.send(resp_array!["MONITOR"])
             .map_err(|e| e.into())
             .and_then(move |_| {
                           receiver.for_each(|incoming| {

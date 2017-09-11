@@ -17,6 +17,7 @@ use bytes::{BufMut, BytesMut};
 
 use tokio_io::codec::{Decoder, Encoder};
 
+use super::error;
 use super::error::Error;
 
 /// A single RESP value, this owns the data that is read/to-be written to Redis.
@@ -26,6 +27,8 @@ use super::error::Error;
 /// single-subscriber enforcement would make more sense, or sharing via `Arc`
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RespValue {
+    Nil,
+
     /// Zero, one or more other `RespValue`s.
     Array(Vec<RespValue>),
 
@@ -36,9 +39,26 @@ pub enum RespValue {
     /// An error from the Redis server
     Error(String),
 
-    Integer(usize),
+    Integer(i64),
 
     SimpleString(String),
+}
+
+impl RespValue {
+    fn to_result(self) -> Result<RespValue, Error> {
+        match self {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            x => Ok(x),
+        }
+    }
+
+    pub fn array_len(&self) -> usize {
+        if let &RespValue::Array(ref arr) = self {
+            arr.len()
+        } else {
+            panic!("Not an array");
+        }
+    }
 }
 
 /// A trait to be implemented for every time which can be read from a RESP value.
@@ -48,71 +68,199 @@ pub enum RespValue {
 pub trait FromResp: Sized {
     /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
     /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
-    fn from_resp(resp: RespValue) -> Result<Self, Error>;
+    fn from_resp(resp: RespValue) -> Result<Self, Error> {
+        Self::from_resp_int(resp.to_result()?)
+    }
+
+    fn from_resp_int(resp: RespValue) -> Result<Self, Error>;
 }
 
 impl FromResp for RespValue {
-    fn from_resp(resp: RespValue) -> Result<RespValue, Error> {
-        match resp {
-            RespValue::Error(string) => Err(Error::Remote(string)),
-            x => Ok(x),
-        }
+    fn from_resp_int(resp: RespValue) -> Result<RespValue, Error> {
+        Ok(resp)
     }
 }
 
 impl FromResp for String {
-    fn from_resp(resp: RespValue) -> Result<String, Error> {
+    fn from_resp_int(resp: RespValue) -> Result<String, Error> {
         match resp {
-            RespValue::Array(_) => Err(Error::RESP("Cannot be converted into a string".into())),
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
-            RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
+            _ => Err(error::resp("Cannot convert into a string", resp)),
         }
     }
 }
 
-/// A trait to be implemented on types that can be automatically converted into `RespValue`s.
+impl FromResp for Vec<u8> {
+    fn from_resp_int(resp: RespValue) -> Result<Vec<u8>, Error> {
+        match resp {
+            RespValue::BulkString(bytes) => Ok(bytes),
+            _ => Err(error::resp("Not a bulk string", resp)),
+        }
+    }
+}
+
+impl FromResp for i64 {
+    fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
+        match resp {
+            RespValue::Integer(i) => Ok(i),
+            _ => Err(error::resp("Cannot be converted into an i64", resp)),
+        }
+    }
+}
+
+impl FromResp for usize {
+    fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
+        i64::from_resp_int(resp).map(|x| x as usize)
+    }
+}
+
+impl<T: FromResp> FromResp for Option<T> {
+    fn from_resp_int(resp: RespValue) -> Result<Option<T>, Error> {
+        match resp {
+            RespValue::Nil => Ok(None),
+            x => Ok(Some(T::from_resp_int(x)?)),
+        }
+    }
+}
+
+impl<T: FromResp> FromResp for Vec<T> {
+    fn from_resp_int(resp: RespValue) -> Result<Vec<T>, Error> {
+        match resp {
+            RespValue::Array(ary) => {
+                let mut ar = Vec::with_capacity(ary.len());
+                for value in ary {
+                    ar.push(T::from_resp(value)?);
+                }
+                Ok(ar)
+            }
+            _ => Err(error::resp("Cannot be converted into a vector", resp)),
+        }
+    }
+}
+
+impl FromResp for () {
+    fn from_resp_int(resp: RespValue) -> Result<(), Error> {
+        match resp {
+            RespValue::Error(string) => Err(Error::Remote(string)),
+            RespValue::SimpleString(string) => {
+                match string.as_ref() {
+                    "OK" => Ok(()),
+                    _ => {
+                        Err(Error::RESP(format!("Unexpected value within SimpleString: {}",
+                                                string),
+                                        None))
+                    }
+                }
+            }
+            _ => Err(error::resp("Unexpected value", resp)),
+        }
+    }
+}
+
+/// Macro to create a RESP array, useful for preparing commands to send.  Elements can be any type, or a mixture
+/// of types, that satisfy `Into<RespValue>`.
 ///
-/// A `From<T>` where `T: ToResp` has been implemented so that everything that implements `ToResp`
-/// can be converted with conversion traits.
-pub trait ToResp {
-    fn to_resp(&self) -> RespValue;
+/// As a general rule, if a value is moved, the data can be deconstructed (if appropriate, e.g. String) and the raw
+/// data moved into the corresponding `RespValue`.  If a reference is provided, the data will be copied instead.
+///
+/// # Examples
+///
+/// ```
+/// #[macro_use]
+/// extern crate redis_async;
+///
+/// fn main() {
+///     let value = format!("something_{}", 123);
+///     resp_array!["SET", "key_name", value];
+/// }
+/// ```
+#[macro_export]
+macro_rules! resp_array {
+    ($($e:expr),*) => {
+        {
+            $crate::resp::RespValue::Array(vec![
+                $(
+                    $e.into(),
+                )*
+            ])
+        }
+    }
 }
 
-impl<'a> ToResp for &'a str {
-    fn to_resp(&self) -> RespValue {
+macro_rules! into_resp {
+    ($t:ty,$f:ident) => {
+        impl<'a> From<$t> for RespValue {
+            fn from(from: $t) -> RespValue {
+                from.$f()
+            }
+        }
+    }
+}
+
+/// A specific trait to convert into a `RespValue::BulkString`
+pub trait ToRespString {
+    fn to_resp_string(self) -> RespValue;
+}
+
+macro_rules! string_into_resp {
+    ($t:ty) => {
+        into_resp!($t, to_resp_string);
+    }
+}
+
+impl ToRespString for String {
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self.into_bytes())
+    }
+}
+string_into_resp!(String);
+
+impl<'a> ToRespString for &'a String {
+    fn to_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
+string_into_resp!(&'a String);
 
-impl<'a, T> ToResp for &'a [T]
-    where T: ToResp
-{
-    fn to_resp(&self) -> RespValue {
-        RespValue::Array(self.as_ref().iter().map(|x| x.to_resp()).collect())
-    }
-}
-
-impl<'a> ToResp for String {
-    fn to_resp(&self) -> RespValue {
+impl<'a> ToRespString for &'a str {
+    fn to_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
+string_into_resp!(&'a str);
 
-impl<'a, T> ToResp for Vec<T>
-    where T: ToResp
-{
-    fn to_resp(&self) -> RespValue {
-        RespValue::Array(self.into_iter().map(|v| v.to_resp()).collect())
+impl<'a> ToRespString for &'a [u8] {
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self.to_vec())
+    }
+}
+string_into_resp!(&'a [u8]);
+
+impl ToRespString for Vec<u8> {
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self)
+    }
+}
+string_into_resp!(Vec<u8>);
+
+pub trait ToRespInteger {
+    fn to_resp_integer(self) -> RespValue;
+}
+
+macro_rules! integer_into_resp {
+    ($t:ty) => {
+        into_resp!($t, to_resp_integer);
     }
 }
 
-impl<T: ToResp> From<T> for RespValue {
-    fn from(from: T) -> RespValue {
-        from.to_resp()
+impl ToRespInteger for usize {
+    fn to_resp_integer(self) -> RespValue {
+        RespValue::Integer(self as i64)
     }
 }
+integer_into_resp!(usize);
 
 /// Codec to read frames
 pub struct RespCodec;
@@ -129,7 +277,7 @@ fn check_and_reserve(buf: &mut BytesMut, amt: usize) {
     }
 }
 
-fn write_header(symb: u8, len: usize, buf: &mut BytesMut) {
+fn write_header(symb: u8, len: i64, buf: &mut BytesMut) {
     let len_as_string = len.to_string();
     let len_as_bytes = len_as_string.as_bytes();
     let header_bytes = 1 + len_as_bytes.len() + 2;
@@ -154,15 +302,18 @@ impl Encoder for RespCodec {
 
     fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match msg {
+            RespValue::Nil => {
+                write_header(b'$', -1, buf);
+            }
             RespValue::Array(ary) => {
-                write_header(b'*', ary.len(), buf);
+                write_header(b'*', ary.len() as i64, buf);
                 for v in ary {
                     self.encode(v, buf)?;
                 }
             }
             RespValue::BulkString(bstr) => {
                 let len = bstr.len();
-                write_header(b'$', len, buf);
+                write_header(b'$', len as i64, buf);
                 check_and_reserve(buf, len + 2);
                 buf.extend(bstr);
                 write_rn(buf);
@@ -184,7 +335,7 @@ impl Encoder for RespCodec {
 
 #[inline]
 fn parse_error(message: String) -> Error {
-    Error::RESP(message)
+    Error::RESP(message, None)
 }
 
 /// Many RESP types have their length (which is either bytes or "number of elements", depending on context)
@@ -206,6 +357,7 @@ fn scan_integer<'a>(buf: &'a mut BytesMut, idx: usize) -> Result<Option<(usize, 
             (true, b'\n') => return Ok(Some((pos + 1, &buf[idx..pos - 1]))),
             (false, b'\r') => at_end = true,
             (false, b'0'...b'9') => (),
+            (false, b'-') => (),
             (_, val) => return Err(parse_error(format!("Unexpected byte in size_string: {}", val))),
         }
         pos += 1;
@@ -233,15 +385,21 @@ fn scan_string(buf: &mut BytesMut, idx: usize) -> Option<(usize, String)> {
     }
 }
 
-fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, usize)>, Error> {
+fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, i64)>, Error> {
     match scan_integer(buf, idx) {
         Ok(None) => Ok(None),
         Ok(Some((pos, int_str))) => {
-            let int: usize = str::from_utf8(int_str)
-                .expect("Not a string")
-                .parse()
-                .expect("Not an integer");
-            Ok(Some((pos, int)))
+            // Redis integers are transmitted as strings, so we first convert the raw bytes into a string...
+            match str::from_utf8(int_str) {
+                Ok(string) => {
+                    // ...and then parse the string.
+                    match string.parse() {
+                        Ok(int) => Ok(Some((pos, int))),
+                        Err(_) => Err(parse_error(format!("Not an integer: {}", string))),
+                    }
+                }
+                Err(_) => Err(parse_error(format!("Not a valid string: {:?}", int_str))),
+            }
         }
         Err(e) => Err(e),
     }
@@ -252,7 +410,9 @@ type DecodeResult = Result<Option<(usize, RespValue)>, Error>;
 fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
-        Ok(Some((pos, size))) => {
+        Ok(Some((pos, -1))) => Ok(Some((pos, RespValue::Nil))),
+        Ok(Some((pos, size))) if size >= 0 => {
+            let size = size as usize;
             let remaining = buf.len() - pos;
             let required_bytes = size + 2;
 
@@ -263,6 +423,7 @@ fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
             let bulk_string = RespValue::BulkString(buf[pos..(pos + size)].to_vec());
             Ok(Some((pos + required_bytes, bulk_string)))
         }
+        Ok(Some((_, size))) => Err(parse_error(format!("Invalid string size: {}", size))),
         Err(e) => Err(e),
     }
 }
@@ -270,7 +431,8 @@ fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
 fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
-        Ok(Some((pos, size))) => {
+        Ok(Some((pos, size))) if size >= 0 => {
+            let size = size as usize;
             let mut pos = pos;
             let mut values = Vec::with_capacity(size);
             for _ in 0..size {
@@ -285,6 +447,7 @@ fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
             }
             Ok(Some((pos, RespValue::Array(values))))
         }
+        Ok(Some((_, size))) => Err(parse_error(format!("Invalid array size: {}", size))),
         Err(e) => Err(e),
     }
 }
@@ -376,5 +539,15 @@ mod tests {
 
         let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
         assert_eq!(deserialized, resp_object);
+    }
+
+    #[test]
+    fn test_nil_string() {
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(&b"$-1\r\n"[..]);
+
+        let mut codec = RespCodec;
+        let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
+        assert_eq!(deserialized, RespValue::Nil);
     }
 }

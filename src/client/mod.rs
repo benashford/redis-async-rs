@@ -20,9 +20,10 @@
 //! in one response.
 //! * `pubsub_connect` is used for Redis's PUBSUB functionality.
 
-mod connect;
-mod paired;
-mod pubsub;
+pub mod connect;
+#[macro_use]
+pub mod paired;
+pub mod pubsub;
 
 pub use self::connect::{connect, ClientConnection};
 pub use self::paired::{paired_connect, PairedConnection};
@@ -49,7 +50,7 @@ mod test {
             .and_then(|connection| {
                           let a = connection
                               .sender
-                              .send(["PING", "TEST"].as_ref().into())
+                              .send(resp_array!["PING", "TEST"])
                               .map_err(|e| e.into());
                           let b = connection.receiver.take(1).collect();
                           a.join(b)
@@ -68,13 +69,13 @@ mod test {
             .map_err(|e| e.into())
             .and_then(|connection| {
                 let mut ops = Vec::<resp::RespValue>::new();
-                ops.push(["FLUSH"].as_ref().into());
+                ops.push(resp_array!["FLUSH"]);
                 ops.extend((0..1000).map(|i| {
-                                             ["SADD", "test_set", &format!("VALUE: {}", i)]
-                                                 .as_ref()
-                                                 .into()
+                                             resp_array!["SADD",
+                                                         "test_set",
+                                                         format!("VALUE: {}", i)]
                                          }));
-                ops.push(["SMEMBERS", "test_set"].as_ref().into());
+                ops.push(resp_array!["SMEMBERS", "test_set"]);
                 let send = connection
                     .sender
                     .send_all(stream::iter_ok::<_, io::Error>(ops))
@@ -97,9 +98,9 @@ mod test {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
-            let res_f = connection.send(["PING", "TEST"].as_ref());
-            connection.send_and_forget(["SET", "X", "123"].as_ref());
-            let wait_f = connection.send(["GET", "X"].as_ref());
+            let res_f = connection.send(resp_array!["PING", "TEST"]);
+            faf!(connection.send(resp_array!["SET", "X", "123"]));
+            let wait_f = connection.send(resp_array!["GET", "X"]);
             res_f.join(wait_f)
         });
         let (result_1, result_2): (String, String) = core.run(connect_f).unwrap();
@@ -114,8 +115,10 @@ mod test {
 
         let connect_f = super::paired_connect(&addr, &core.handle()).and_then(|connection| {
             connection
-                .send(["INCR", "CTR"].as_ref())
-                .and_then(move |value: String| connection.send(["SET", "LASTCTR", &value].as_ref()))
+                .send(resp_array!["INCR", "CTR"])
+                .and_then(move |value: String| {
+                              connection.send(resp_array!["SET", "LASTCTR", value])
+                          })
         });
         let result: String = core.run(connect_f).unwrap();
         assert_eq!(result, "OK");
@@ -131,8 +134,8 @@ mod test {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
                 let key = format!("X_{}", i);
-                connection.send_and_forget(["SET", &key, &i.to_string()].as_ref());
-                futures.push(connection.send(["GET", &key].as_ref()));
+                faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
+                futures.push(connection.send(resp_array!["GET", key]));
             }
             futures.remove(999)
         });
@@ -152,11 +155,10 @@ mod test {
             .and_then(|(paired, pubsub)| {
                 let subscribe = pubsub.subscribe("test-topic");
                 subscribe.and_then(move |msgs| {
-                    paired.send_and_forget(["PUBLISH", "test-topic", "test-message"].as_ref());
-                    paired.send_and_forget(["PUBLISH", "test-not-topic", "test-message-1.5"]
-                                               .as_ref());
+                    faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
+                    faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
                     paired
-                        .send(["PUBLISH", "test-topic", "test-message2"].as_ref())
+                        .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
                         .map(|_: resp::RespValue| msgs)
                 })
             });

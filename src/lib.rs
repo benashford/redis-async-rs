@@ -58,6 +58,10 @@ extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
 
-pub mod client;
-pub mod error;
+#[macro_use]
 pub mod resp;
+
+#[macro_use]
+pub mod client;
+
+pub mod error;
