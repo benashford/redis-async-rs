@@ -162,6 +162,9 @@ impl FromResp for () {
 /// Macro to create a RESP array, useful for preparing commands to send.  Elements can be any type, or a mixture
 /// of types, that satisfy `Into<RespValue>`.
 ///
+/// As a general rule, if a value is moved, the data can be deconstructed (if appropriate, e.g. String) and the raw
+/// data moved into the corresponding `RespValue`.  If a reference is provided, the data will be copied instead.
+///
 /// # Examples
 ///
 /// ```

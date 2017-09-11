@@ -63,6 +63,9 @@ pub struct PairedConnection {
 
 pub type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
 
+/// Fire-and-forget, used to force the return type of a `send` command where the result is not required
+/// to satisfy the generic return type.
+///
 #[macro_export]
 macro_rules! faf {
     ($e:expr) => (
@@ -77,9 +80,9 @@ macro_rules! faf {
 impl PairedConnection {
     /// Sends a command to Redis.
     ///
-    /// The message must be in the format of a single RESP message (or a format for which a
-    /// conversion trait is defined).  Returned is a future that resolves to the value returned
-    /// from Redis.  The type must be one for which the `resp::FromResp` trait is defined.
+    /// The message must be in the format of a single RESP message, this can be constructed
+    /// manually or with the `resp_array!` macro.  Returned is a future that resolves to the value
+    /// returned from Redis.  The type must be one for which the `resp::FromResp` trait is defined.
     ///
     /// The future will fail for numerous reasons, including but not limited to: IO issues, conversion
     /// problems, and server-side errors being returned by Redis.
@@ -87,18 +90,21 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<R, T: resp::FromResp + 'static>(&self, msg: R) -> SendBox<T>
-        where R: Into<resp::RespValue>
-    {
+    pub fn send<T: resp::FromResp + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
+        match &msg {
+            &resp::RespValue::Array(_) => (),
+            _ => {
+                return Box::new(future::err(error::internal("Command must be a RespValue::Array")))
+            }
+        }
+
         let (tx, rx) = oneshot::channel();
         let mut queue = self.resp_queue.lock().expect("Tainted queue");
 
         queue.push_back(tx);
 
-        let full_msg = msg.into();
-        self.out_tx
-            .unbounded_send(full_msg)
-            .expect("Failed to send");
+        self.out_tx.unbounded_send(msg).expect("Failed to send");
+
         let future = rx.then(|v| match v {
                                  Ok(v) => future::result(T::from_resp(v)),
                                  Err(e) => future::err(e.into()),
