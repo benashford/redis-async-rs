@@ -382,6 +382,38 @@ mod commands {
         }
     }
 
+    #[derive(Copy, Clone)]
+    pub enum BitOp { And, Or, Xor, Not }
+
+    impl From<BitOp> for RespValue {
+        fn from(op: BitOp) -> RespValue {
+            match op {
+                BitOp::And => "AND",
+                BitOp::Or => "OR",
+                BitOp::Xor => "XOR",
+                BitOp::Not => "NOT"
+            }.into()
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn bitop<K, C>(&self, (op, destkey, keys): (BitOp, K, C)) -> SendBox<i64>
+        where K: ToRespString + Into<RespValue>,
+        C: CommandCollection
+        {
+            let mut cmd = Vec::new();
+            cmd.push(op.into());
+            cmd.push(destkey.into());
+            keys.add_to_cmd(&mut cmd);
+
+            if cmd.len() > 2 {
+                self.send(RespValue::Array(cmd))
+            } else {
+                Box::new(future::err(error::internal("BITOP command needs at least one key")))
+            }
+        }
+    }
+
     // MARKER - all accounted for above this line
 
     impl super::PairedConnection {
