@@ -133,6 +133,51 @@ mod commands {
 
     use super::SendBox;
 
+    /// Several Redis commands take an open-ended collection of keys, or other such structures that are flattened
+    /// into the redis command.  For example `MGET key1 key2 key3`.
+    ///
+    /// The challenge for this library is anticipating how this might be used by applications.  It's conceivable that
+    /// applications will use vectors, but also might have a fixed set of keys which could either be passed in an array
+    /// or as a reference to a slice.
+    ///
+    pub trait CommandCollection {
+        fn add_to_cmd(self, &mut Vec<RespValue>);
+    }
+
+    impl<T: ToRespString + Into<RespValue>> CommandCollection for Vec<T> {
+        fn add_to_cmd(self, cmd: &mut Vec<RespValue>) {
+            cmd.extend(self.into_iter().map(|key| key.into()));
+        }
+    }
+
+    impl<'a, T: ToRespString + Into<RespValue> + ToOwned<Owned = T>> CommandCollection for &'a [T] {
+        fn add_to_cmd(self, cmd: &mut Vec<RespValue>) {
+            cmd.extend(self.into_iter().map(|key| key.to_owned().into()));
+        }
+    }
+
+    macro_rules! command_collection_ary {
+        ($c:expr) => {
+            impl<T: ToRespString + Into<RespValue>> CommandCollection for [T; $c] {
+                fn add_to_cmd(mut self, cmd: &mut Vec<RespValue>) {
+                    for idx in 0..$c {
+                        let value = unsafe { mem::replace(&mut self[idx], mem::uninitialized()) };
+                        cmd.push(value.into());
+                    }
+                }
+            }
+        }
+    }
+
+    command_collection_ary!(1);
+    command_collection_ary!(2);
+    command_collection_ary!(3);
+    command_collection_ary!(4);
+    command_collection_ary!(5);
+    command_collection_ary!(6);
+    command_collection_ary!(7);
+    command_collection_ary!(8);
+
     // TODO - check the expansion regarding trailing commas, etc.
     macro_rules! simple_command {
         ($n:ident,$k:expr,[ $(($p:ident : $t:ident)),* ],$r:ty) => {
@@ -338,51 +383,91 @@ mod commands {
         }
     }
 
-    // MARKER - all accounted for above this line
-
-    pub trait DelCommand {
-        fn to_cmd(self) -> RespValue;
+    #[derive(Copy, Clone)]
+    pub enum BitOp {
+        And,
+        Or,
+        Xor,
+        Not,
     }
 
-    // TODO - probably doesn't need to be a trait at all
-    impl<'a, T: ToRespString + Into<RespValue>> DelCommand for (Vec<T>) {
-        fn to_cmd(self) -> RespValue {
-            let mut keys = Vec::with_capacity(self.len() + 1);
-            keys.push("DEL".into());
-            keys.extend(self.into_iter().map(|key| key.into()));
-            RespValue::Array(keys)
-        }
-    }
-
-    impl<'a, T: ToRespString + ToOwned<Owned = T> + Into<RespValue>> DelCommand for (&'a [T]) {
-        fn to_cmd(self) -> RespValue {
-            let mut keys = Vec::with_capacity(self.len() + 1);
-            keys.push("DEL".into());
-            keys.extend(self.into_iter().map(|key| key.to_owned().into()));
-            RespValue::Array(keys)
-        }
-    }
-
-    // TODO - need a macro or something to create default options for sensible arrays
-    impl<'a, T: ToRespString + Into<RespValue>> DelCommand for ([T; 1]) {
-        fn to_cmd(mut self) -> RespValue {
-            let mut keys = Vec::with_capacity(2);
-            keys.push("DEL".into());
-            {
-                let value = unsafe { mem::replace(&mut self[0], mem::uninitialized()) };
-                keys.push(value.into());
-            }
-            RespValue::Array(keys)
+    impl From<BitOp> for RespValue {
+        fn from(op: BitOp) -> RespValue {
+            match op {
+                    BitOp::And => "AND",
+                    BitOp::Or => "OR",
+                    BitOp::Xor => "XOR",
+                    BitOp::Not => "NOT",
+                }
+                .into()
         }
     }
 
     impl super::PairedConnection {
-        pub fn del<C>(&self, cmd: C) -> SendBox<usize>
-            where C: DelCommand
+        pub fn bitop<K, C>(&self, (op, destkey, keys): (BitOp, K, C)) -> SendBox<i64>
+            where K: ToRespString + Into<RespValue>,
+                  C: CommandCollection
         {
-            let cmd = cmd.to_cmd();
-            if cmd.array_len() > 1 {
-                self.send(cmd)
+            let mut cmd = Vec::new();
+            cmd.push(op.into());
+            cmd.push(destkey.into());
+            keys.add_to_cmd(&mut cmd);
+
+            if cmd.len() > 2 {
+                self.send(RespValue::Array(cmd))
+            } else {
+                Box::new(future::err(error::internal("BITOP command needs at least one key")))
+            }
+        }
+    }
+
+    pub trait BitposCommand {
+        fn to_cmd(self) -> RespValue;
+    }
+
+    impl<K, B> BitposCommand for (K, B, usize)
+        where K: ToRespString + Into<RespValue>,
+              B: ToRespString + Into<RespValue>
+    {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITPOS", self.0, self.1, self.2.to_string()]
+        }
+    }
+
+    impl<K, B> BitposCommand for (K, B, usize, usize)
+        where K: ToRespString + Into<RespValue>,
+              B: ToRespString + Into<RespValue>
+    {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITPOS",
+                        self.0,
+                        self.1,
+                        self.2.to_string(),
+                        self.3.to_string()]
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn bitpos<C>(&self, cmd: C) -> SendBox<i64>
+            where C: BitposCommand
+        {
+            self.send(cmd.to_cmd())
+        }
+    }
+
+    // MARKER - all accounted for above this line
+
+    impl super::PairedConnection {
+        // TODO - there may be a way of generalising this kind of thing
+        pub fn del<C>(&self, keys: (C)) -> SendBox<usize>
+            where C: CommandCollection
+        {
+            let mut cmd = Vec::new();
+            cmd.push("DEL".into());
+            keys.add_to_cmd(&mut cmd);
+
+            if cmd.len() > 1 {
+                self.send(RespValue::Array(cmd))
             } else {
                 Box::new(future::err(error::internal("DEL command needs at least one key")))
             }
@@ -544,6 +629,16 @@ mod commands {
             let (mut core, connection) = setup();
 
             let del_keys = ["DEL_KEY_1"];
+            let connection = connection.and_then(|connection| connection.del(del_keys));
+
+            let _ = core.run(connection).unwrap();
+        }
+
+        #[test]
+        fn del_test_ary2() {
+            let (mut core, connection) = setup();
+
+            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
             let connection = connection.and_then(|connection| connection.del(del_keys));
 
             let _ = core.run(connection).unwrap();

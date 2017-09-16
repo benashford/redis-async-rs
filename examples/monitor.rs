@@ -30,17 +30,20 @@ fn main() {
         .parse()
         .unwrap();
 
-    let monitor = client::connect(&addr, &core.handle()).map_err(|e| e.into()).and_then(|connection| {
-        let client::ClientConnection { sender, receiver } = connection;
-        sender.send(resp_array!["MONITOR"])
-            .map_err(|e| e.into())
-            .and_then(move |_| {
-                          receiver.for_each(|incoming| {
-                                              println!("{:?}", incoming);
-                                              future::ok(())
-                                            })
-                      })
-    });
+    let monitor = client::connect(&addr, &core.handle())
+        .map_err(|e| e.into())
+        .and_then(|connection| {
+            let client::ClientConnection { sender, receiver } = connection;
+            sender
+                .send(resp_array!["MONITOR"])
+                .map_err(|e| e.into())
+                .and_then(move |_| {
+                              receiver.for_each(|incoming| {
+                                                    println!("{:?}", incoming);
+                                                    future::ok(())
+                                                })
+                          })
+        });
 
     core.run(monitor).unwrap();
 }

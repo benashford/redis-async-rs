@@ -46,7 +46,7 @@ fn main() {
                 let connection_inner = connection.clone();
                 connection
                     .send(resp_array!["INCR", "realistic_test_ctr"])
-                    .and_then(move |ctr:String| {
+                    .and_then(move |ctr: String| {
                                   let key = format!("rt_{}", ctr);
                                   let d_val = data.0.to_string();
                                   faf!(connection_inner.send(resp_array!["SET", &key, d_val]));
@@ -56,6 +56,6 @@ fn main() {
         future::join_all(futures)
     });
 
-    let result:Vec<String> = core.run(send_data).unwrap();
+    let result: Vec<String> = core.run(send_data).unwrap();
     assert_eq!(result.len(), test_data_size);
 }

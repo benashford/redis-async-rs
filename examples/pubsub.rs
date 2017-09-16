@@ -27,13 +27,21 @@ fn main() {
     let handle = core.handle();
 
     let topic = env::args().nth(1).unwrap_or("test-topic".to_string());
-    let addr = env::args().nth(2).unwrap_or("127.0.0.1:6379".to_string()).parse().unwrap();
+    let addr = env::args()
+        .nth(2)
+        .unwrap_or("127.0.0.1:6379".to_string())
+        .parse()
+        .unwrap();
 
-    let msgs = client::pubsub_connect(&addr, &handle).and_then(move |connection| connection.subscribe(topic));
-    let the_loop = msgs.map_err(|_| ()).and_then(|msgs| msgs.for_each(|message| {
-        println!("{}", String::from_resp(message).unwrap());
-        future::ok(())
-    }));
+    let msgs = client::pubsub_connect(&addr, &handle)
+        .and_then(move |connection| connection.subscribe(topic));
+    let the_loop = msgs.map_err(|_| ())
+        .and_then(|msgs| {
+                      msgs.for_each(|message| {
+                                        println!("{}", String::from_resp(message).unwrap());
+                                        future::ok(())
+                                    })
+                  });
 
     core.run(the_loop).unwrap();
 }
