@@ -66,7 +66,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
             gets.push(connection.send(resp_array!["GET", test_key]));
         }
         let last_get = gets.remove(data_size - 1);
-        let _:String = core.run(last_get).unwrap();
+        let _: String = core.run(last_get).unwrap();
     });
 }
 
@@ -91,6 +91,6 @@ fn bench_complex_pipeline(b: &mut Bencher) {
                           })
         });
         let all_sets = futures::future::join_all(sets);
-        let _:Vec<String> = core.run(all_sets).unwrap();
+        let _: Vec<String> = core.run(all_sets).unwrap();
     });
 }

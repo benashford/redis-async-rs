@@ -149,7 +149,7 @@ mod commands {
         }
     }
 
-    impl<'a, T: ToRespString + Into<RespValue> + ToOwned<Owned=T>> CommandCollection for &'a [T] {
+    impl<'a, T: ToRespString + Into<RespValue> + ToOwned<Owned = T>> CommandCollection for &'a [T] {
         fn add_to_cmd(self, cmd: &mut Vec<RespValue>) {
             cmd.extend(self.into_iter().map(|key| key.to_owned().into()));
         }
@@ -383,23 +383,29 @@ mod commands {
     }
 
     #[derive(Copy, Clone)]
-    pub enum BitOp { And, Or, Xor, Not }
+    pub enum BitOp {
+        And,
+        Or,
+        Xor,
+        Not,
+    }
 
     impl From<BitOp> for RespValue {
         fn from(op: BitOp) -> RespValue {
             match op {
-                BitOp::And => "AND",
-                BitOp::Or => "OR",
-                BitOp::Xor => "XOR",
-                BitOp::Not => "NOT"
-            }.into()
+                    BitOp::And => "AND",
+                    BitOp::Or => "OR",
+                    BitOp::Xor => "XOR",
+                    BitOp::Not => "NOT",
+                }
+                .into()
         }
     }
 
     impl super::PairedConnection {
         pub fn bitop<K, C>(&self, (op, destkey, keys): (BitOp, K, C)) -> SendBox<i64>
-        where K: ToRespString + Into<RespValue>,
-        C: CommandCollection
+            where K: ToRespString + Into<RespValue>,
+                  C: CommandCollection
         {
             let mut cmd = Vec::new();
             cmd.push(op.into());
