@@ -144,7 +144,6 @@ impl<T: FromResp> FromResp for Vec<T> {
 impl FromResp for () {
     fn from_resp_int(resp: RespValue) -> Result<(), Error> {
         match resp {
-            RespValue::Error(string) => Err(Error::Remote(string)),
             RespValue::SimpleString(string) => {
                 match string.as_ref() {
                     "OK" => Ok(()),
