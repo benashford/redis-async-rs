@@ -420,6 +420,40 @@ mod commands {
         }
     }
 
+    pub trait BitposCommand {
+        fn to_cmd(self) -> RespValue;
+    }
+
+    impl<K, B> BitposCommand for (K, B, usize)
+        where K: ToRespString + Into<RespValue>,
+              B: ToRespString + Into<RespValue>
+    {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITPOS", self.0, self.1, self.2.to_string()]
+        }
+    }
+
+    impl<K, B> BitposCommand for (K, B, usize, usize)
+        where K: ToRespString + Into<RespValue>,
+              B: ToRespString + Into<RespValue>
+    {
+        fn to_cmd(self) -> RespValue {
+            resp_array!["BITPOS",
+                        self.0,
+                        self.1,
+                        self.2.to_string(),
+                        self.3.to_string()]
+        }
+    }
+
+    impl super::PairedConnection {
+        pub fn bitpos<C>(&self, cmd: C) -> SendBox<i64>
+            where C: BitposCommand
+        {
+            self.send(cmd.to_cmd())
+        }
+    }
+
     // MARKER - all accounted for above this line
 
     impl super::PairedConnection {
