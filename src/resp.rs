@@ -423,6 +423,7 @@ fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
 fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match decode_raw_integer(buf, idx) {
         Ok(None) => Ok(None),
+        Ok(Some((pos, -1))) => Ok(Some((pos, RespValue::Nil))),
         Ok(Some((pos, size))) if size >= 0 => {
             let size = size as usize;
             let mut pos = pos;
