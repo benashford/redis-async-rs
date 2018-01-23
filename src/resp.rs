@@ -136,16 +136,13 @@ impl<T: FromResp> FromResp for Vec<T> {
 impl FromResp for () {
     fn from_resp_int(resp: RespValue) -> Result<(), Error> {
         match resp {
-            RespValue::SimpleString(string) => {
-                match string.as_ref() {
-                    "OK" => Ok(()),
-                    _ => {
-                        Err(Error::RESP(format!("Unexpected value within SimpleString: {}",
-                                                string),
-                                        None))
-                    }
-                }
-            }
+            RespValue::SimpleString(string) => match string.as_ref() {
+                "OK" => Ok(()),
+                _ => Err(Error::RESP(
+                    format!("Unexpected value within SimpleString: {}", string),
+                    None,
+                )),
+            },
             _ => Err(error::resp("Unexpected value", resp)),
         }
     }
@@ -350,7 +347,12 @@ fn scan_integer<'a>(buf: &'a mut BytesMut, idx: usize) -> Result<Option<(usize, 
             (false, b'\r') => at_end = true,
             (false, b'0'...b'9') => (),
             (false, b'-') => (),
-            (_, val) => return Err(parse_error(format!("Unexpected byte in size_string: {}", val))),
+            (_, val) => {
+                return Err(parse_error(format!(
+                    "Unexpected byte in size_string: {}",
+                    val
+                )))
+            }
         }
         pos += 1;
     }
@@ -527,8 +529,10 @@ mod tests {
         let mut bytes = BytesMut::new();
         let mut codec = RespCodec;
         codec.encode(resp_object.clone(), &mut bytes).unwrap();
-        assert_eq!(b"*2\r\n$5\r\nTEST1\r\n$5\r\nTEST2\r\n".to_vec(),
-                   bytes.to_vec());
+        assert_eq!(
+            b"*2\r\n$5\r\nTEST1\r\n$5\r\nTEST2\r\n".to_vec(),
+            bytes.to_vec()
+        );
 
         let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
         assert_eq!(deserialized, resp_object);
