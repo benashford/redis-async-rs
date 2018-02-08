@@ -34,16 +34,20 @@ where
         .and_then(move |connection| {
             let ClientConnection { sender, receiver } = connection;
             let (out_tx, out_rx) = mpsc::unbounded();
-
+            let running = Arc::new(Mutex::new(true));
+            let sender_running = running.clone();
             let sender = Box::new(
                 out_rx
                     .fold(sender, |sender, msg| {
-                        println!("Sending... {:?}", msg);
                         sender.send(msg).map_err(|e| {
                             error!("Cannot send message: {}", e);
                         })
                     })
-                    .map(|_| ()),
+                    .map(move |_| {
+                        debug!("Closing the sender stream...");
+                        let mut lock = sender_running.lock().expect("Lock is tainted");
+                        *lock = false
+                    }),
             ) as Box<Future<Item = (), Error = ()>>;
 
             let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
@@ -52,19 +56,27 @@ where
             let receiver = Box::new(
                 receiver
                     .for_each(move |msg| {
-                        println!("Receiving... {:?}", msg);
                         let mut queue = receiver_queue.lock().expect("Lock is tainted");
                         let dest = queue.pop_front().expect("Queue is empty");
-                        println!("Promulgating...");
-                        match dest.send(msg) {
-                            Ok(()) => Ok(()),
-                            // Ignore error as the channel may have been legitimately closed in the meantime
-                            Err(_) => Ok(()),
+                        let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
+                        if queue.is_empty() {
+                            let running = running.lock().expect("Lock is tainted");
+                            if *running {
+                                Ok(())
+                            } else {
+                                Err(error::Error::EndOfStream)
+                            }
+                        } else {
+                            Ok(())
                         }
                     })
-                    .map_err(|e| {
-                        error!("Error receiving message: {}", e);
-                    }),
+                    .then(|result| match result {
+                        Ok(()) => future::ok(()),
+                        Err(error::Error::EndOfStream) => future::ok(()),
+                        Err(e) => future::err(e),
+                    })
+                    .map(|_| debug!("Closing the receiver stream, receiver closed"))
+                    .map_err(|e| error!("Error receiving message: {}", e)),
             );
 
             match executor

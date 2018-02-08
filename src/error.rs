@@ -30,6 +30,9 @@ pub enum Error {
     /// A remote error
     Remote(String),
 
+    /// End of stream - not necesserially an error if you're anticipating it
+    EndOfStream,
+
     /// An unexpected error, boxed to allow type-erasure.  In this context "unexpected" means
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
@@ -70,6 +73,7 @@ impl error::Error for Error {
             Error::IO(ref err) => err.description(),
             Error::RESP(ref s, _) => s,
             Error::Remote(ref s) => s,
+            Error::EndOfStream => "End of Stream",
             Error::Unexpected(ref err) => err.description(),
         }
     }
@@ -80,6 +84,7 @@ impl error::Error for Error {
             Error::IO(ref err) => Some(err),
             Error::RESP(_, _) => None,
             Error::Remote(_) => None,
+            Error::EndOfStream => None,
             Error::Unexpected(ref err) => Some(err.as_ref()),
         }
     }

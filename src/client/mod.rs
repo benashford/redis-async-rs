@@ -112,27 +112,27 @@ mod test {
         assert_eq!(values.len(), 1000);
     }
 
-    // #[test]
-    // fn can_paired_connect() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
+    #[test]
+    fn can_paired_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let connect_f =
-    //         super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
-    //             let res_f = connection.send(resp_array!["PING", "TEST"]).map(|v| {
-    //                 println!("FIRST: {:?}", v);
-    //                 v
-    //             });
-    //             faf!(connection.send(resp_array!["SET", "X", "123"]));
-    //             let wait_f = connection.send(resp_array!["GET", "X"]).map(|v| {
-    //                 println!("THIRD: {:?}", v);
-    //                 v
-    //             });
-    //             res_f.join(wait_f)
-    //         });
-    //     let (result_1, result_2): (String, String) = extract_result(connect_f);
-    //     assert_eq!(result_1, "TEST");
-    //     assert_eq!(result_2, "123");
-    // }
+        let connect_f =
+            super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
+                let res_f = connection.send(resp_array!["PING", "TEST"]).map(|v| {
+                    println!("FIRST: {:?}", v);
+                    v
+                });
+                faf!(connection.send(resp_array!["SET", "X", "123"]));
+                let wait_f = connection.send(resp_array!["GET", "X"]).map(|v| {
+                    println!("THIRD: {:?}", v);
+                    v
+                });
+                res_f.join(wait_f)
+            });
+        let (result_1, result_2): (String, String) = extract_result(connect_f);
+        assert_eq!(result_1, "TEST");
+        assert_eq!(result_2, "123");
+    }
 
     // #[test]
     // fn complex_paired_connect() {
