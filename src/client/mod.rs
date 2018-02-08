@@ -32,33 +32,46 @@ pub use self::connect::{connect, ClientConnection};
 
 #[cfg(test)]
 mod test {
+    use std::fmt;
     use std::io;
 
+    use futures;
     use futures::{stream, Future, Sink, Stream};
+
+    use tokio::executor::current_thread;
 
     use error;
     use resp;
 
-    // TODO - uncomment
-    // #[test]
-    // fn can_connect() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
+    fn extract_result<F, R, E>(f: F) -> R
+    where
+        F: Future<Item = R, Error = E>,
+        E: fmt::Debug,
+    {
+        let r = current_thread::run(|_| f.wait());
+        r.expect("Future did not complete satisfactorally")
+    }
 
-    //     let connection = super::connect(&addr)
-    //         .map_err(|e| e.into())
-    //         .and_then(|connection| {
-    //             let a = connection
-    //                 .sender
-    //                 .send(resp_array!["PING", "TEST"])
-    //                 .map_err(|e| e.into());
-    //             let b = connection.receiver.take(1).collect();
-    //             a.join(b)
-    //         });
+    #[test]
+    fn can_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let (_, values) = core.run(connection).unwrap();
-    //     assert_eq!(values.len(), 1);
-    //     assert_eq!(values[0], "TEST".into());
-    // }
+        let connection = super::connect(&addr)
+            .map_err(|e| e.into())
+            .and_then(|connection| {
+                let a = connection
+                    .sender
+                    .send(resp_array!["PING", "TEST"])
+                    .map_err(|e| e.into());
+                let b = connection.receiver.take(1).collect();
+                a.join(b)
+            });
+
+        let (_, values) = extract_result(connection);
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], "TEST".into());
+    }
 
     // #[test]
     // fn complex_test() {
