@@ -73,33 +73,33 @@ mod test {
         assert_eq!(values[0], "TEST".into());
     }
 
-    // #[test]
-    // fn complex_test() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
-    //     let connection = super::connect(&addr)
-    //         .map_err(|e| e.into())
-    //         .and_then(|connection| {
-    //             let mut ops = Vec::<resp::RespValue>::new();
-    //             ops.push(resp_array!["FLUSH"]);
-    //             ops.extend(
-    //                 (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
-    //             );
-    //             ops.push(resp_array!["SMEMBERS", "test_set"]);
-    //             let send = connection
-    //                 .sender
-    //                 .send_all(stream::iter_ok::<_, io::Error>(ops))
-    //                 .map_err(|e| e.into());
-    //             let receive = connection.receiver.skip(1001).take(1).collect();
-    //             send.join(receive)
-    //         });
-    //     let (_, values) = core.run(connection).unwrap();
-    //     assert_eq!(values.len(), 1);
-    //     let values = match &values[0] {
-    //         &resp::RespValue::Array(ref values) => values.clone(),
-    //         _ => panic!("Not an array"),
-    //     };
-    //     assert_eq!(values.len(), 1000);
-    // }
+    #[test]
+    fn complex_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let connection = super::connect(&addr)
+            .map_err(|e| e.into())
+            .and_then(|connection| {
+                let mut ops = Vec::<resp::RespValue>::new();
+                ops.push(resp_array!["FLUSH"]);
+                ops.extend(
+                    (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
+                );
+                ops.push(resp_array!["SMEMBERS", "test_set"]);
+                let send = connection
+                    .sender
+                    .send_all(stream::iter_ok::<_, io::Error>(ops))
+                    .map_err(|e| e.into());
+                let receive = connection.receiver.skip(1001).take(1).collect();
+                send.join(receive)
+            });
+        let (_, values) = extract_result(connection);
+        assert_eq!(values.len(), 1);
+        let values = match &values[0] {
+            &resp::RespValue::Array(ref values) => values.clone(),
+            _ => panic!("Not an array"),
+        };
+        assert_eq!(values.len(), 1000);
+    }
 
     // #[test]
     // fn can_paired_connect() {
