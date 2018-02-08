@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -9,7 +9,6 @@
  */
 
 extern crate futures;
-extern crate tokio_core;
 #[macro_use]
 extern crate redis_async;
 
@@ -17,8 +16,6 @@ use std::sync::Arc;
 use std::env;
 
 use futures::{future, Future};
-
-use tokio_core::reactor::Core;
 
 use redis_async::client;
 
@@ -28,34 +25,31 @@ fn main() {
     let test_data_size = 10;
     let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
 
-    let mut core = Core::new().unwrap();
+    // TODO - uncomment
+    // let addr = env::args()
+    //     .nth(1)
+    //     .unwrap_or("127.0.0.1:6379".to_string())
+    //     .parse()
+    //     .unwrap();
 
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or("127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+    // let test_f = client::paired_connect(&addr);
 
-    let test_f = client::paired_connect(&addr, &core.handle());
+    // let send_data = test_f.and_then(|connection| {
+    //     let connection = Arc::new(connection);
+    //     let futures = test_data.into_iter().map(move |data| {
+    //         let connection_inner = connection.clone();
+    //         connection
+    //             .send(resp_array!["INCR", "realistic_test_ctr"])
+    //             .and_then(move |ctr: String| {
+    //                 let key = format!("rt_{}", ctr);
+    //                 let d_val = data.0.to_string();
+    //                 faf!(connection_inner.send(resp_array!["SET", &key, d_val]));
+    //                 connection_inner.send(resp_array!["SET", data.1, key])
+    //             })
+    //     });
+    //     future::join_all(futures)
+    // });
 
-    let send_data = test_f.and_then(|connection| {
-        let connection = Arc::new(connection);
-        let futures = test_data
-            .into_iter()
-            .map(move |data| {
-                let connection_inner = connection.clone();
-                connection
-                    .send(resp_array!["INCR", "realistic_test_ctr"])
-                    .and_then(move |ctr: String| {
-                                  let key = format!("rt_{}", ctr);
-                                  let d_val = data.0.to_string();
-                                  faf!(connection_inner.send(resp_array!["SET", &key, d_val]));
-                                  connection_inner.send(resp_array!["SET", data.1, key])
-                              })
-            });
-        future::join_all(futures)
-    });
-
-    let result: Vec<String> = core.run(send_data).unwrap();
-    assert_eq!(result.len(), test_data_size);
+    // let result: Vec<String> = core.run(send_data).unwrap();
+    // assert_eq!(result.len(), test_data_size);
 }

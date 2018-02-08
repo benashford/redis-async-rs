@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -13,8 +13,7 @@ use std::net::SocketAddr;
 
 use futures::{Future, Sink, Stream};
 
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
+use tokio::net::TcpStream;
 
 use tokio_io::AsyncRead;
 
@@ -26,10 +25,8 @@ const DEFAULT_BUFFER_SIZE: usize = 100;
 
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
-pub fn connect(addr: &SocketAddr,
-               handle: &Handle)
-               -> Box<Future<Item = ClientConnection, Error = io::Error>> {
-    let con = TcpStream::connect(addr, handle).map(move |socket| {
+pub fn connect(addr: &SocketAddr) -> Box<Future<Item = ClientConnection, Error = io::Error>> {
+    let con = TcpStream::connect(addr).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
         let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
