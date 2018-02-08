@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::{future, Future, Sink, Stream};
+use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
 
 use error;
@@ -24,35 +25,65 @@ type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Er
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-// TODO - uncomment
-// pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
-//     let paired_con = connect(addr)
-//         .map(move |connection| {
-//             let ClientConnection { sender, receiver } = connection;
-//             let (out_tx, out_rx) = mpsc::unbounded();
-//             let sender = out_rx.fold(sender, |sender, msg| sender.send(msg).map_err(|_| ()));
-//             let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
-//                 Arc::new(Mutex::new(VecDeque::new()));
-//             let receiver_queue = resp_queue.clone();
-//             let receiver = receiver.for_each(move |msg| {
-//                 let mut queue = receiver_queue.lock().expect("Lock is tainted");
-//                 let dest = queue.pop_front().expect("Queue is empty");
-//                 match dest.send(msg) {
-//                     Ok(()) => Ok(()),
-//                     // Ignore error as the channel may have been legitimately closed in the meantime
-//                     Err(_) => Ok(()),
-//                 }
-//             });
-//             handle.spawn(sender.map(|_| ()));
-//             handle.spawn(receiver.map_err(|_| ()));
-//             PairedConnection {
-//                 out_tx: out_tx,
-//                 resp_queue: resp_queue,
-//             }
-//         })
-//         .map_err(|e| e.into());
-//     Box::new(paired_con)
-// }
+pub fn paired_connect<E>(addr: &SocketAddr, executor: E) -> PairedConnectionBox
+where
+    E: Executor<Box<Future<Item = (), Error = ()>>> + 'static,
+{
+    let paired_con = connect(addr)
+        .map_err(|e| e.into())
+        .and_then(move |connection| {
+            let ClientConnection { sender, receiver } = connection;
+            let (out_tx, out_rx) = mpsc::unbounded();
+
+            let sender = Box::new(
+                out_rx
+                    .fold(sender, |sender, msg| {
+                        println!("Sending... {:?}", msg);
+                        sender.send(msg).map_err(|e| {
+                            error!("Cannot send message: {}", e);
+                        })
+                    })
+                    .map(|_| ()),
+            ) as Box<Future<Item = (), Error = ()>>;
+
+            let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
+                Arc::new(Mutex::new(VecDeque::new()));
+            let receiver_queue = resp_queue.clone();
+            let receiver = Box::new(
+                receiver
+                    .for_each(move |msg| {
+                        println!("Receiving... {:?}", msg);
+                        let mut queue = receiver_queue.lock().expect("Lock is tainted");
+                        let dest = queue.pop_front().expect("Queue is empty");
+                        println!("Promulgating...");
+                        match dest.send(msg) {
+                            Ok(()) => Ok(()),
+                            // Ignore error as the channel may have been legitimately closed in the meantime
+                            Err(_) => Ok(()),
+                        }
+                    })
+                    .map_err(|e| {
+                        error!("Error receiving message: {}", e);
+                    }),
+            );
+
+            match executor
+                .execute(sender)
+                .and_then(|_| executor.execute(receiver))
+            {
+                Ok(()) => future::ok(PairedConnection {
+                    out_tx: out_tx,
+                    resp_queue: resp_queue,
+                }),
+                Err(e) => future::err(error::internal(format!(
+                    "Cannot start background tasks: {:?}",
+                    e
+                ))),
+            }
+        })
+        .map_err(|e| e.into());
+    Box::new(paired_con)
+}
 
 pub struct PairedConnection {
     out_tx: mpsc::UnboundedSender<resp::RespValue>,

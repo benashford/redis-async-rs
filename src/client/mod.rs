@@ -26,8 +26,9 @@ pub mod paired;
 pub mod pubsub;
 
 pub use self::connect::{connect, ClientConnection};
+pub use self::paired::{paired_connect, PairedConnection};
+
 // TODO - uncomment
-// pub use self::paired::{paired_connect, PairedConnection};
 // pub use self::pubsub::{pubsub_connect, PubsubConnection};
 
 #[cfg(test)]
@@ -35,21 +36,31 @@ mod test {
     use std::fmt;
     use std::io;
 
-    use futures;
+    use futures::future;
+    use futures::sync::oneshot;
     use futures::{stream, Future, Sink, Stream};
 
     use tokio::executor::current_thread;
 
-    use error;
     use resp;
 
     fn extract_result<F, R, E>(f: F) -> R
     where
-        F: Future<Item = R, Error = E>,
-        E: fmt::Debug,
+        R: 'static,
+        F: Future<Item = R, Error = E> + 'static,
+        E: fmt::Debug + 'static,
     {
-        let r = current_thread::run(|_| f.wait());
-        r.expect("Future did not complete satisfactorally")
+        let r = current_thread::run(|_| {
+            let (tx, rx) = oneshot::channel();
+            current_thread::spawn(f.then(move |r| match tx.send(r) {
+                Ok(_) => future::ok(()),
+                Err(_) => future::err(()),
+            }));
+            rx
+        });
+        r.wait()
+            .expect("Result was cancelled")
+            .expect("Future failed")
     }
 
     #[test]
@@ -105,13 +116,20 @@ mod test {
     // fn can_paired_connect() {
     //     let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let connect_f = super::paired_connect(&addr).and_then(|connection| {
-    //         let res_f = connection.send(resp_array!["PING", "TEST"]);
-    //         faf!(connection.send(resp_array!["SET", "X", "123"]));
-    //         let wait_f = connection.send(resp_array!["GET", "X"]);
-    //         res_f.join(wait_f)
-    //     });
-    //     let (result_1, result_2): (String, String) = core.run(connect_f).unwrap();
+    //     let connect_f =
+    //         super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
+    //             let res_f = connection.send(resp_array!["PING", "TEST"]).map(|v| {
+    //                 println!("FIRST: {:?}", v);
+    //                 v
+    //             });
+    //             faf!(connection.send(resp_array!["SET", "X", "123"]));
+    //             let wait_f = connection.send(resp_array!["GET", "X"]).map(|v| {
+    //                 println!("THIRD: {:?}", v);
+    //                 v
+    //             });
+    //             res_f.join(wait_f)
+    //         });
+    //     let (result_1, result_2): (String, String) = extract_result(connect_f);
     //     assert_eq!(result_1, "TEST");
     //     assert_eq!(result_2, "123");
     // }
