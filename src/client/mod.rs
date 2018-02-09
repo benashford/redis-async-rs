@@ -167,30 +167,29 @@ mod test {
         assert_eq!(result, "999");
     }
 
-    // TODO - uncomment
-    // #[test]
-    // fn pubsub_test() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
-    //     let paired_c = super::paired_connect(&addr, current_thread::task_executor());
-    //     let pubsub_c = super::pubsub_connect(&addr, current_thread::task_executor());
-    //     let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
-    //         let subscribe = pubsub.subscribe("test-topic");
-    //         subscribe.and_then(move |msgs| {
-    //             faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
-    //             faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
-    //             paired
-    //                 .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
-    //                 .map(|_: resp::RespValue| msgs)
-    //         })
-    //     });
-    //     let tst = msgs.and_then(|msgs| {
-    //         msgs.take(2)
-    //             .collect()
-    //             .map_err(|_| error::internal("unreachable"))
-    //     });
-    //     let result = extract_result(tst);
-    //     assert_eq!(result.len(), 2);
-    //     assert_eq!(result[0], "test-message".into());
-    //     assert_eq!(result[1], "test-message2".into());
-    // }
+    #[test]
+    fn pubsub_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = super::paired_connect(&addr, current_thread::task_executor());
+        let pubsub_c = super::pubsub_connect(&addr, current_thread::task_executor());
+        let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
+            let subscribe = pubsub.subscribe("test-topic");
+            subscribe.and_then(move |msgs| {
+                faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
+                faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
+                paired
+                    .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
+                    .map(|_: resp::RespValue| msgs)
+            })
+        });
+        let tst = msgs.and_then(|msgs| {
+            msgs.take(2)
+                .collect()
+                .map_err(|_| error::internal("unreachable"))
+        });
+        let result = extract_result(tst);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "test-message".into());
+        assert_eq!(result[1], "test-message2".into());
+    }
 }

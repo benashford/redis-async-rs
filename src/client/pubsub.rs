@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use futures::{Future, Sink, Stream};
+use futures::{Future, Poll, Sink, Stream};
 use futures::future;
 use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
@@ -82,34 +82,35 @@ where
                 };
                 let mut subs = subs_reader.lock().expect("Lock is tainted");
                 if message_type == b"subscribe" {
-                    if let Some(pending) = subs.pending.remove(&topic) {
-                        let mut txes = Vec::with_capacity(pending.len());
-                        let mut futures = Vec::with_capacity(pending.len());
-                        for (tx, notification_tx) in pending {
-                            txes.push(tx);
-                            futures.push(notification_tx.send(()));
+                    if let Some((tx, notification_tx)) = subs.pending.remove(&topic) {
+                        subs.confirmed.insert(topic, tx);
+                        match notification_tx.send(()) {
+                            Ok(()) => {
+                                let ok =
+                                    future::ok(()).map_err(|_: ()| error::internal("unreachable"));
+                                Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                            }
+                            Err(()) => err("Cannot send notification of subscription"),
                         }
-                        subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
-                        let futures = future::join_all(futures)
-                            .map(|_| ())
-                            .map_err(|_| error::internal("unreachable"));
-                        Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
                     } else {
-                        let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-                        Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                        err("Received subscribe notification that wasn't expected")
+                    }
+                } else if message_type == b"unsubscribe" {
+                    if let Some(_) = subs.confirmed.remove(&topic) {
+                        let result = if subs.confirmed.is_empty() {
+                            future::err(error::Error::EndOfStream)
+                        } else {
+                            future::ok(())
+                        };
+                        Box::new(result) as Box<Future<Item = (), Error = error::Error>>
+                    } else {
+                        err("Receieved unsubscription notification from a topic we're not subscribed to")
                     }
                 } else if message_type == b"message" {
                     match subs.confirmed.get(&topic) {
-                        Some(txes) => {
-                            let futures: Vec<_> = txes.iter()
-                                .map(|tx| {
-                                    let tx = tx.clone();
-                                    tx.send(msg.clone())
-                                })
-                                .collect();
-                            let futures =
-                                future::join_all(futures).map(|_| ()).map_err(|e| e.into());
-                            Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
+                        Some(tx) => {
+                            let future = tx.clone().send(msg).map(|_| ()).map_err(|e| e.into());
+                            Box::new(future) as Box<Future<Item = (), Error = error::Error>>
                         }
                         None => {
                             let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
@@ -121,7 +122,14 @@ where
                 }
             });
             let receiver = Box::new(
-                receiver_raw.map_err(|e| error!("PUBSUB Receiver error: {}", e)),
+                receiver_raw
+                    .then(|result| match result {
+                        Ok(_) => future::ok(()),
+                        Err(error::Error::EndOfStream) => future::ok(()),
+                        Err(e) => future::err(e),
+                    })
+                    .map(|_| debug!("End of PUBSUB connection, successful"))
+                    .map_err(|e| error!("PUBSUB Receiver error: {}", e)),
             ) as Box<Future<Item = (), Error = ()>>;
 
             match executor
@@ -142,8 +150,8 @@ where
 }
 
 struct PubsubSubscriptions {
-    pending: HashMap<String, Vec<(mpsc::Sender<resp::RespValue>, oneshot::Sender<()>)>>,
-    confirmed: HashMap<String, Vec<mpsc::Sender<resp::RespValue>>>,
+    pending: HashMap<String, (mpsc::Sender<resp::RespValue>, oneshot::Sender<()>)>,
+    confirmed: HashMap<String, mpsc::Sender<resp::RespValue>>,
 }
 
 #[derive(Clone)]
@@ -160,30 +168,72 @@ impl PubsubConnection {
     pub fn subscribe<T: Into<String>>(
         &self,
         topic: T,
-    ) -> Box<Future<Item = Box<Stream<Item = resp::RespValue, Error = ()>>, Error = error::Error>>
-    {
+    ) -> Box<Future<Item = PubsubStream, Error = error::Error>> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
 
         // TODO - check arbitrary buffer size
         let (tx, rx) = mpsc::channel(10);
         let stream = Box::new(rx) as Box<Stream<Item = resp::RespValue, Error = ()>>;
-        if let Some(ref mut entry) = subs.confirmed.get_mut(&topic) {
-            entry.push(tx);
-            return Box::new(future::ok(stream));
+        if subs.confirmed.contains_key(&topic) || subs.pending.contains_key(&topic) {
+            return Box::new(future::err(error::internal("Already subscribed")));
         }
 
         let (notification_tx, notification_rx) = oneshot::channel();
         let subscribe_msg = resp_array!["SUBSCRIBE", &topic];
-        subs.pending
-            .entry(topic)
-            .or_insert(Vec::new())
-            .push((tx, notification_tx));
-        self.out_tx
-            .unbounded_send(subscribe_msg)
-            .expect("Failed to send");
+        subs.pending.insert(topic.clone(), (tx, notification_tx));
+        let new_out_tx = self.out_tx.clone();
+        match self.out_tx.unbounded_send(subscribe_msg) {
+            Ok(_) => {
+                let done = notification_rx
+                    .map(|_| PubsubStream::new(topic, stream, new_out_tx))
+                    .map_err(|e| e.into());
+                Box::new(done)
+            }
+            Err(e) => Box::new(future::err(e.into())),
+        }
+    }
+}
 
-        let done = notification_rx.map(|_| stream).map_err(|e| e.into());
-        Box::new(done)
+pub struct PubsubStream {
+    topic: String,
+    underlying: Box<Stream<Item = resp::RespValue, Error = ()>>,
+    out_tx: mpsc::UnboundedSender<resp::RespValue>,
+}
+
+impl PubsubStream {
+    fn new<S>(topic: String, stream: S, out_tx: mpsc::UnboundedSender<resp::RespValue>) -> Self
+    where
+        S: Stream<Item = resp::RespValue, Error = ()> + 'static,
+    {
+        PubsubStream {
+            topic: topic,
+            underlying: Box::new(stream),
+            out_tx: out_tx,
+        }
+    }
+}
+
+impl Stream for PubsubStream {
+    type Item = resp::RespValue;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.underlying.poll()
+    }
+}
+
+impl Drop for PubsubStream {
+    fn drop(&mut self) {
+        let send_f = self.out_tx
+            .clone()
+            .send(resp_array!["UNSUBSCRIBE", &self.topic]);
+        match send_f.wait() {
+            Ok(_) => debug!("Send unsubscribe command for topic: {}", self.topic),
+            Err(e) => error!(
+                "Failed to send unsubscribe command for topic: {}, error: {}",
+                self.topic, e
+            ),
+        }
     }
 }
