@@ -134,38 +134,39 @@ mod test {
         assert_eq!(result_2, "123");
     }
 
-    // #[test]
-    // fn complex_paired_connect() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
+    #[test]
+    fn complex_paired_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let connect_f = super::paired_connect(&addr).and_then(|connection| {
-    //         connection
-    //             .send(resp_array!["INCR", "CTR"])
-    //             .and_then(move |value: String| {
-    //                 connection.send(resp_array!["SET", "LASTCTR", value])
-    //             })
-    //     });
-    //     let result: String = core.run(connect_f).unwrap();
-    //     assert_eq!(result, "OK");
-    // }
+        let connect_f =
+            super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
+                connection
+                    .send(resp_array!["INCR", "CTR"])
+                    .and_then(move |value: String| {
+                        connection.send(resp_array!["SET", "LASTCTR", value])
+                    })
+            });
+        let result: String = extract_result(connect_f);
+        assert_eq!(result, "OK");
+    }
 
-    // #[test]
-    // fn sending_a_lot_of_data_test() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
+    #[test]
+    fn sending_a_lot_of_data_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let test_f = super::paired_connect(&addr);
-    //     let send_data = test_f.and_then(|connection| {
-    //         let mut futures = Vec::with_capacity(1000);
-    //         for i in 0..1000 {
-    //             let key = format!("X_{}", i);
-    //             faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
-    //             futures.push(connection.send(resp_array!["GET", key]));
-    //         }
-    //         futures.remove(999)
-    //     });
-    //     let result: String = core.run(send_data).unwrap();
-    //     assert_eq!(result, "999");
-    // }
+        let test_f = super::paired_connect(&addr, current_thread::task_executor());
+        let send_data = test_f.and_then(|connection| {
+            let mut futures = Vec::with_capacity(1000);
+            for i in 0..1000 {
+                let key = format!("X_{}", i);
+                faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
+                futures.push(connection.send(resp_array!["GET", key]));
+            }
+            futures.remove(999)
+        });
+        let result: String = extract_result(send_data);
+        assert_eq!(result, "999");
+    }
 
     // #[test]
     // fn pubsub_test() {
