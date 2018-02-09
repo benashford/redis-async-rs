@@ -27,9 +27,7 @@ pub mod pubsub;
 
 pub use self::connect::{connect, ClientConnection};
 pub use self::paired::{paired_connect, PairedConnection};
-
-// TODO - uncomment
-// pub use self::pubsub::{pubsub_connect, PubsubConnection};
+pub use self::pubsub::{pubsub_connect, PubsubConnection};
 
 #[cfg(test)]
 mod test {
@@ -42,6 +40,7 @@ mod test {
 
     use tokio::executor::current_thread;
 
+    use error;
     use resp;
 
     fn extract_result<F, R, E>(f: F) -> R
@@ -168,11 +167,12 @@ mod test {
         assert_eq!(result, "999");
     }
 
+    // TODO - uncomment
     // #[test]
     // fn pubsub_test() {
     //     let addr = "127.0.0.1:6379".parse().unwrap();
-    //     let paired_c = super::paired_connect(&addr);
-    //     let pubsub_c = super::pubsub_connect(&addr);
+    //     let paired_c = super::paired_connect(&addr, current_thread::task_executor());
+    //     let pubsub_c = super::pubsub_connect(&addr, current_thread::task_executor());
     //     let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
     //         let subscribe = pubsub.subscribe("test-topic");
     //         subscribe.and_then(move |msgs| {
@@ -188,7 +188,7 @@ mod test {
     //             .collect()
     //             .map_err(|_| error::internal("unreachable"))
     //     });
-    //     let result = core.run(tst).unwrap();
+    //     let result = extract_result(tst);
     //     assert_eq!(result.len(), 2);
     //     assert_eq!(result[0], "test-message".into());
     //     assert_eq!(result[1], "test-message2".into());

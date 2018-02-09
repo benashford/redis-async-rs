@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::{Future, Sink, Stream};
 use futures::future;
+use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
 
 use error;
@@ -21,94 +22,124 @@ use resp;
 use resp::FromResp;
 use super::connect::{connect, ClientConnection};
 
+fn err<S>(msg: S) -> Box<Future<Item = (), Error = error::Error>>
+where
+    S: Into<String>,
+{
+    Box::new(future::err(error::internal(msg)))
+}
+
 /// Used for Redis's PUBSUB functionality.
 ///
 /// Returns a future that resolves to a `PubsubConnection`.
-//
-// TODO - uncomment
-// pub fn pubsub_connect(
-//     addr: &SocketAddr,
-// ) -> Box<Future<Item = PubsubConnection, Error = error::Error>> {
-//     let pubsub_con = connect(addr)
-//         .map(move |connection| {
-//             let ClientConnection { sender, receiver } = connection;
-//             let (out_tx, out_rx) = mpsc::unbounded();
-//             let sender = out_rx.fold(sender, |sender, msg| sender.send(msg).map_err(|_| ()));
-//             let subs = Arc::new(Mutex::new(PubsubSubscriptions {
-//                 pending: HashMap::new(),
-//                 confirmed: HashMap::new(),
-//             }));
-//             let subs_reader = subs.clone();
-//             let receiver = receiver.for_each(move |msg| {
-//                 // TODO: check message type - and handle accordingly.
-//                 let (message_type, topic, msg) = if let resp::RespValue::Array(mut messages) = msg {
-//                     assert_eq!(messages.len(), 3);
-//                     let msg = messages.pop().expect("No message");
-//                     let topic = messages.pop().expect("No topic");
-//                     let message_type = messages.pop().expect("No type");
-//                     (
-//                         message_type,
-//                         String::from_resp(topic).expect("Topic should be a string"),
-//                         msg,
-//                     )
-//                 } else {
-//                     panic!("incorrect type");
-//                 };
-//                 let mut subs = subs_reader.lock().expect("Lock is tainted");
-//                 if let resp::RespValue::BulkString(ref bytes) = message_type {
-//                     if bytes == b"subscribe" {
-//                         if let Some(pending) = subs.pending.remove(&topic) {
-//                             let mut txes = Vec::with_capacity(pending.len());
-//                             let mut futures = Vec::with_capacity(pending.len());
-//                             for (tx, notification_tx) in pending {
-//                                 txes.push(tx);
-//                                 futures.push(notification_tx.send(()));
-//                             }
-//                             subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
-//                             let futures = future::join_all(futures)
-//                                 .map(|_| ())
-//                                 .map_err(|_| error::internal("unreachable"));
-//                             Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
-//                         } else {
-//                             let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-//                             Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
-//                         }
-//                     } else if bytes == b"message" {
-//                         match subs.confirmed.get(&topic) {
-//                             Some(txes) => {
-//                                 let futures: Vec<_> = txes.iter()
-//                                     .map(|tx| {
-//                                         let tx = tx.clone();
-//                                         tx.send(msg.clone())
-//                                     })
-//                                     .collect();
-//                                 let futures =
-//                                     future::join_all(futures).map(|_| ()).map_err(|e| e.into());
-//                                 Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
-//                             }
-//                             None => {
-//                                 let ok =
-//                                     future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-//                                 Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
-//                             }
-//                         }
-//                     } else {
-//                         panic!("Unexpected bytes: {:?}", bytes);
-//                     }
-//                 } else {
-//                     panic!("Message format error: {:?}", message_type);
-//                 }
-//             });
-//             handle.spawn(sender.map(|_| ()));
-//             handle.spawn(receiver.map_err(|_| ()));
-//             PubsubConnection {
-//                 out_tx: out_tx,
-//                 subscriptions: subs,
-//             }
-//         })
-//         .map_err(|e| e.into());
-//     Box::new(pubsub_con)
-// }
+pub fn pubsub_connect<E>(
+    addr: &SocketAddr,
+    executor: E,
+) -> Box<Future<Item = PubsubConnection, Error = error::Error>>
+where
+    E: Executor<Box<Future<Item = (), Error = ()>>> + 'static,
+{
+    let pubsub_con = connect(addr)
+        .map_err(|e| e.into())
+        .and_then(move |connection| {
+            let ClientConnection { sender, receiver } = connection;
+            let (out_tx, out_rx) = mpsc::unbounded();
+
+            let sender = Box::new(
+                sender
+                    .sink_map_err(|e| error!("Sending socket error: {}", e))
+                    .send_all(out_rx)
+                    .map(|_| debug!("Send all completed successfully")),
+            ) as Box<Future<Item = (), Error = ()>>;
+
+            let subs = Arc::new(Mutex::new(PubsubSubscriptions {
+                pending: HashMap::new(),
+                confirmed: HashMap::new(),
+            }));
+            let subs_reader = subs.clone();
+
+            let receiver_raw = receiver.for_each(move |msg| {
+                let (message_type, topic, msg) = match msg {
+                    resp::RespValue::Array(mut messages) => {
+                        match (messages.pop(), messages.pop(), messages.pop()) {
+                            (Some(msg), Some(topic), Some(message_type)) => {
+                                match (msg, String::from_resp(topic), message_type) {
+                                    (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
+                                        (bytes, topic, msg)
+                                    }
+                                    _ => return err("Message structure invalid"),
+                                }
+                            }
+                            _ => {
+                                return err(format!(
+                                    "Incorrect number of records in PUBSUB message: {}",
+                                    messages.len()
+                                ))
+                            }
+                        }
+                    }
+                    _ => return err("Incorrect message type"),
+                };
+                let mut subs = subs_reader.lock().expect("Lock is tainted");
+                if message_type == b"subscribe" {
+                    if let Some(pending) = subs.pending.remove(&topic) {
+                        let mut txes = Vec::with_capacity(pending.len());
+                        let mut futures = Vec::with_capacity(pending.len());
+                        for (tx, notification_tx) in pending {
+                            txes.push(tx);
+                            futures.push(notification_tx.send(()));
+                        }
+                        subs.confirmed.entry(topic).or_insert(vec![]).extend(txes);
+                        let futures = future::join_all(futures)
+                            .map(|_| ())
+                            .map_err(|_| error::internal("unreachable"));
+                        Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
+                    } else {
+                        let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
+                        Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                    }
+                } else if message_type == b"message" {
+                    match subs.confirmed.get(&topic) {
+                        Some(txes) => {
+                            let futures: Vec<_> = txes.iter()
+                                .map(|tx| {
+                                    let tx = tx.clone();
+                                    tx.send(msg.clone())
+                                })
+                                .collect();
+                            let futures =
+                                future::join_all(futures).map(|_| ()).map_err(|e| e.into());
+                            Box::new(futures) as Box<Future<Item = (), Error = error::Error>>
+                        }
+                        None => {
+                            let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
+                            Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                        }
+                    }
+                } else {
+                    return err(format!("Unexpected message type: {:?}", message_type));
+                }
+            });
+            let receiver = Box::new(
+                receiver_raw.map_err(|e| error!("PUBSUB Receiver error: {}", e)),
+            ) as Box<Future<Item = (), Error = ()>>;
+
+            match executor
+                .execute(sender)
+                .and_then(|_| executor.execute(receiver))
+            {
+                Ok(()) => future::ok(PubsubConnection {
+                    out_tx: out_tx,
+                    subscriptions: subs,
+                }),
+                Err(e) => future::err(error::internal(format!(
+                    "Cannot execute background task: {:?}",
+                    e
+                ))),
+            }
+        });
+    Box::new(pubsub_con)
+}
 
 struct PubsubSubscriptions {
     pending: HashMap<String, Vec<(mpsc::Sender<resp::RespValue>, oneshot::Sender<()>)>>,
