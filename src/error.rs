@@ -37,7 +37,7 @@ pub enum Error {
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
     /// failure.
-    Unexpected(Box<error::Error>),
+    Unexpected(Box<error::Error + Send>),
 }
 
 pub fn internal<T: Into<String>>(msg: T) -> Error {
@@ -60,7 +60,7 @@ impl From<oneshot::Canceled> for Error {
     }
 }
 
-impl<T: 'static> From<mpsc::SendError<T>> for Error {
+impl<T: 'static + Send> From<mpsc::SendError<T>> for Error {
     fn from(err: mpsc::SendError<T>) -> Error {
         Error::Unexpected(Box::new(err))
     }

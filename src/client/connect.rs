@@ -43,6 +43,6 @@ pub fn connect(addr: &SocketAddr) -> Box<Future<Item = ClientConnection, Error =
 ///
 /// The two halves operate independently from one another
 pub struct ClientConnection {
-    pub sender: Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error>>,
-    pub receiver: Box<Stream<Item = resp::RespValue, Error = error::Error>>,
+    pub sender: Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error> + Send>,
+    pub receiver: Box<Stream<Item = resp::RespValue, Error = error::Error> + Send>,
 }

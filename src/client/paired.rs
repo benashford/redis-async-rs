@@ -27,7 +27,7 @@ type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Er
 /// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect<E>(addr: &SocketAddr, executor: E) -> PairedConnectionBox
 where
-    E: Executor<Box<Future<Item = (), Error = ()>>> + 'static,
+    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
 {
     let paired_con = connect(addr)
         .map_err(|e| e.into())
@@ -48,7 +48,7 @@ where
                         let mut lock = sender_running.lock().expect("Lock is tainted");
                         *lock = false
                     }),
-            ) as Box<Future<Item = (), Error = ()>>;
+            ) as Box<Future<Item = (), Error = ()> + Send>;
 
             let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
                 Arc::new(Mutex::new(VecDeque::new()));
@@ -70,14 +70,17 @@ where
                             Ok(())
                         }
                     })
-                    .then(|result| match result {
-                        Ok(()) => future::ok(()),
-                        Err(error::Error::EndOfStream) => future::ok(()),
-                        Err(e) => future::err(e),
+                    .then(|result| {
+                        println!("SOMETHING: {:?}", result);
+                        match result {
+                            Ok(()) => future::ok(()),
+                            Err(error::Error::EndOfStream) => future::ok(()),
+                            Err(e) => future::err(e),
+                        }
                     })
                     .map(|_| debug!("Closing the receiver stream, receiver closed"))
                     .map_err(|e| error!("Error receiving message: {}", e)),
-            );
+            ) as Box<Future<Item = (), Error = ()> + Send>;
 
             match executor
                 .execute(sender)
@@ -102,7 +105,7 @@ pub struct PairedConnection {
     resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
 }
 
-pub type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
+pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
 
 /// Fire-and-forget, used to force the return type of a `send` command where the result is not required
 /// to satisfy the generic return type.
@@ -131,7 +134,7 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T: resp::FromResp + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
+    pub fn send<T: resp::FromResp + Send + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
         match &msg {
             &resp::RespValue::Array(_) => (),
             _ => {
