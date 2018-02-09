@@ -17,27 +17,27 @@ use std::env;
 use futures::{Future, Stream};
 use futures::future;
 
+use tokio::executor::current_thread;
+
 use redis_async::client;
 use redis_async::resp::FromResp;
 
 fn main() {
-    // TODO - uncomment
-    // let topic = env::args().nth(1).unwrap_or("test-topic".to_string());
-    // let addr = env::args()
-    //     .nth(2)
-    //     .unwrap_or("127.0.0.1:6379".to_string())
-    //     .parse()
-    //     .unwrap();
+    let topic = env::args().nth(1).unwrap_or("test-topic".to_string());
+    let addr = env::args()
+        .nth(2)
+        .unwrap_or("127.0.0.1:6379".to_string())
+        .parse()
+        .unwrap();
 
-    // TODO - uncomment
-    // let msgs = client::pubsub_connect(&addr, &handle)
-    //     .and_then(move |connection| connection.subscribe(topic));
-    // let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
-    //     msgs.for_each(|message| {
-    //         println!("{}", String::from_resp(message).unwrap());
-    //         future::ok(())
-    //     })
-    // });
+    let msgs = client::pubsub_connect(&addr, current_thread::task_executor())
+        .and_then(move |connection| connection.subscribe(topic));
+    let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
+        msgs.for_each(|message| {
+            println!("{}", String::from_resp(message).unwrap());
+            future::ok(())
+        })
+    });
 
-    // core.run(the_loop).unwrap();
+    current_thread::run(|_| current_thread::spawn(the_loop));
 }
