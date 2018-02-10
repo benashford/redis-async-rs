@@ -68,11 +68,8 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
         let get = connection.send(resp_array!["GET", "test_key"]);
         let del = connection.send(resp_array!["DEL", "test_key"]);
         let get_set = get.join(del);
-        cpu_pool.execute(
-            get_set
-                .map(|(a, b): (resp::RespValue, resp::RespValue)| ())
-                .map_err(|_| ()),
-        );
+        let cpu_f = cpu_pool.spawn(get_set);
+        let result: (String, String) = cpu_f.wait().expect("No result");
     });
 }
 
@@ -103,36 +100,31 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
 
 #[bench]
 fn bench_complex_pipeline(b: &mut Bencher) {
-    env_logger::init();
-
-    info!("TESTING");
-
     let cpu_pool = CpuPool::new_num_cpus();
     let addr = "127.0.0.1:6379".parse().unwrap();
 
-    let connection = open_paired_connection(&addr, cpu_pool.clone());
-    let connection = Arc::new(connection);
+    let connection_outer = Arc::new(open_paired_connection(&addr, cpu_pool.clone()));
 
     let data_size = 100;
 
     b.iter(|| {
-        let connection_outer = connection.clone();
-        let sets: Vec<_> = (0..data_size)
-            .map(move |x| {
-                let connection_inner = connection_outer.clone();
-                connection_outer
+        let all_sets = {
+            let connection = connection_outer.clone();
+            let sets = (0..data_size).map(move |x| {
+                let connection_inner = connection.clone();
+                connection_inner
                     .send(resp_array!["INCR", "id_gen"])
                     .and_then(move |id: String| {
                         let id = format!("id_{}", id);
                         connection_inner.send(resp_array!["SET", &id, &x.to_string()])
                     })
-            })
-            .collect();
-        let all_sets = futures::future::join_all(sets);
+            });
+            futures::future::join_all(sets)
+        };
 
-        cpu_pool
-            .execute(all_sets.map(|_: Vec<String>| ()).map_err(|_| ()))
-            .expect("ERROR RUNNING");
+        let cpu_f = cpu_pool.spawn(all_sets);
+        let result: Vec<String> = cpu_f.wait().expect("No result");
+        assert_eq!(result.len(), data_size);
     });
 
     println!("{:?}", cpu_pool);

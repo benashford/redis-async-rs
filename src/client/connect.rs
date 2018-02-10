@@ -29,9 +29,9 @@ pub fn connect(addr: &SocketAddr) -> Box<Future<Item = ClientConnection, Error =
     let con = TcpStream::connect(addr).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
-        let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
+        // let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
         ClientConnection {
-            sender: Box::new(write_b),
+            sender: Box::new(write_f),
             receiver: Box::new(read_f),
         }
     });

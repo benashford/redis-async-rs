@@ -37,16 +37,22 @@ where
             let running = Arc::new(Mutex::new(true));
             let sender_running = running.clone();
             let sender = Box::new(
-                out_rx
-                    .fold(sender, |sender, msg| {
-                        sender.send(msg).map_err(|e| {
-                            error!("Cannot send message: {}", e);
-                        })
-                    })
-                    .map(move |_| {
-                        debug!("Closing the sender stream...");
+                sender
+                    .sink_map_err(|e| error!("Sender error: {}", e))
+                    .send_all(out_rx)
+                    .then(move |r| {
                         let mut lock = sender_running.lock().expect("Lock is tainted");
-                        *lock = false
+                        *lock = false;
+                        match r {
+                            Ok(_) => {
+                                info!("Sender stream closed...");
+                                future::ok(())
+                            }
+                            Err(e) => {
+                                error!("Error occurred: {:?}", e);
+                                future::err(())
+                            }
+                        }
                     }),
             ) as Box<Future<Item = (), Error = ()> + Send>;
 
@@ -70,13 +76,10 @@ where
                             Ok(())
                         }
                     })
-                    .then(|result| {
-                        println!("SOMETHING: {:?}", result);
-                        match result {
-                            Ok(()) => future::ok(()),
-                            Err(error::Error::EndOfStream) => future::ok(()),
-                            Err(e) => future::err(e),
-                        }
+                    .then(|result| match result {
+                        Ok(()) => future::ok(()),
+                        Err(error::Error::EndOfStream) => future::ok(()),
+                        Err(e) => future::err(e),
                     })
                     .map(|_| debug!("Closing the receiver stream, receiver closed"))
                     .map_err(|e| error!("Error receiving message: {}", e)),

@@ -48,7 +48,7 @@ where
             let sender = Box::new(
                 sender
                     .sink_map_err(|e| error!("Sending socket error: {}", e))
-                    .send_all(out_rx)
+                    .send_all(out_rx.map_err(|()| error!("Outgoing message channel error")))
                     .map(|_| debug!("Send all completed successfully")),
             ) as Box<Future<Item = (), Error = ()>>;
 
@@ -60,24 +60,27 @@ where
 
             let receiver_raw = receiver.for_each(move |msg| {
                 let (message_type, topic, msg) = match msg {
-                    resp::RespValue::Array(mut messages) => {
-                        match (messages.pop(), messages.pop(), messages.pop()) {
-                            (Some(msg), Some(topic), Some(message_type)) => {
-                                match (msg, String::from_resp(topic), message_type) {
-                                    (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
-                                        (bytes, topic, msg)
-                                    }
-                                    _ => return err("Message structure invalid"),
+                    resp::RespValue::Array(mut messages) => match (
+                        messages.pop(),
+                        messages.pop(),
+                        messages.pop(),
+                        messages.pop(),
+                    ) {
+                        (Some(msg), Some(topic), Some(message_type), None) => {
+                            match (msg, String::from_resp(topic), message_type) {
+                                (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
+                                    (bytes, topic, msg)
                                 }
-                            }
-                            _ => {
-                                return err(format!(
-                                    "Incorrect number of records in PUBSUB message: {}",
-                                    messages.len()
-                                ))
+                                _ => return err("RESP Message structure invalid"),
                             }
                         }
-                    }
+                        _ => {
+                            return err(format!(
+                                "Incorrect number of records in PUBSUB message: {}",
+                                messages.len()
+                            ))
+                        }
+                    },
                     _ => return err("Incorrect message type"),
                 };
                 let mut subs = subs_reader.lock().expect("Lock is tainted");
