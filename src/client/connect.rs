@@ -25,7 +25,9 @@ const DEFAULT_BUFFER_SIZE: usize = 100;
 
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
-pub fn connect(addr: &SocketAddr) -> Box<Future<Item = ClientConnection, Error = io::Error>> {
+pub fn connect(
+    addr: &SocketAddr,
+) -> Box<Future<Item = ClientConnection, Error = io::Error> + Send> {
     let con = TcpStream::connect(addr).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
