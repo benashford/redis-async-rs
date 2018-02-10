@@ -12,12 +12,8 @@
 
 extern crate test;
 
-extern crate env_logger;
 extern crate futures;
 extern crate futures_cpupool;
-
-#[macro_use]
-extern crate log;
 
 extern crate tokio;
 
@@ -30,16 +26,10 @@ use std::sync::Arc;
 use test::Bencher;
 
 use futures::Future;
-use futures::future;
-use futures::future::Executor;
-use futures::sync::oneshot;
 
 use futures_cpupool::CpuPool;
 
-use tokio::executor::current_thread;
-
 use redis_async::client;
-use redis_async::resp;
 
 fn open_paired_connection(addr: &SocketAddr, cpu_pool: CpuPool) -> client::PairedConnection {
     client::paired_connect(addr, cpu_pool)
@@ -60,7 +50,7 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
         let del = connection.send(resp_array!["DEL", "test_key"]);
         let get_set = get.join(del);
         let cpu_f = cpu_pool.spawn(get_set);
-        let result: (String, String) = cpu_f.wait().expect("No result");
+        let _: (String, String) = cpu_f.wait().expect("No result");
     });
 }
 
@@ -112,13 +102,8 @@ fn bench_complex_pipeline(b: &mut Bencher) {
             futures::future::join_all(sets)
         };
 
-        current_thread::run(|_| {
-            current_thread::spawn(
-                all_sets
-                    .map(|r: Vec<String>| ())
-                    .map_err(|e| panic!("error")),
-            )
-        });
+        let outcome: Vec<String> = cpu_pool.spawn(all_sets).wait().expect("Answers");
+        assert_eq!(outcome.len(), 100);
     });
 
     println!("{:?}", cpu_pool);

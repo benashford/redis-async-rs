@@ -20,9 +20,6 @@ use tokio_io::AsyncRead;
 use error;
 use resp;
 
-/// TODO: comeback and optimise this number
-const DEFAULT_BUFFER_SIZE: usize = 100;
-
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
 pub fn connect(
@@ -31,7 +28,6 @@ pub fn connect(
     let con = TcpStream::connect(addr).map(move |socket| {
         let framed = socket.framed(resp::RespCodec);
         let (write_f, read_f) = framed.split();
-        // let write_b = write_f.buffer(DEFAULT_BUFFER_SIZE);
         ClientConnection {
             sender: Box::new(write_f),
             receiver: Box::new(read_f),
