@@ -7,11 +7,13 @@
 [![](https://docs.rs/redis-async/badge.svg)](https://docs.rs/redis-async/)
 [![Dependency Status](https://dependencyci.com/github/benashford/redis-async-rs/badge)](https://dependencyci.com/github/benashford/redis-async-rs)
 
-An exercise in learning Tokio and Rust's futures by creating a Redis client.  [Documentation](https://docs.rs/redis-async/)
+Using Tokio and Rust's futures to create an asynchronous Redis client.  [Documentation](https://docs.rs/redis-async/)
 
 ## Releases
 
-The API is currently low-level and still subject to change as not all edge-cases have been worked through yet.
+The API is currently low-level and still subject to change.
+
+Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
 ## Other clients
 
@@ -19,12 +21,6 @@ There are a number of pre-existing Redis clients for Rust, two of particular int
 
 * Tokio-Redis - https://github.com/tokio-rs/tokio-redis - written as a demo of Tokio, by Tokio developers
 * Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio
-
-## Why a new Redis client?
-
-The primary goal is to teach myself Tokio.  With a longer-term goal of achieving more than the two existing Redis clients listed above.  For example, Tokio-Redis assumes that a Redis client receives one response to one request, which is true in most cases; however some Redis commands (e.g. the PUBSUB commands) result in infinite streams of data.  A fully-functional Redis client needs to handle such things.
-
-Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
 ## Usage
 
@@ -60,58 +56,28 @@ In order to test this, a tool like ngrep can be used to monitor the data sent to
 interface: lo0 (127.0.0.0/255.0.0.0)
 filter: (ip or ip6) and ( port 6379 )
 #####
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *2..$4..INCR..$18..realistic_test_ctr..
+T 127.0.0.1:61112 -> 127.0.0.1:6379 [AP]
+  *2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..
+  realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr.
+  .*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18.
+  .realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr
+  ..
 ##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18.
-  .realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ct
-  r..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..*2..$4..INCR..$
-  18..realistic_test_ctr..*2..$4..INCR..$18..realistic_test_ctr..
+T 127.0.0.1:6379 -> 127.0.0.1:61112 [AP]
+  :1..:2..:3..:4..:5..:6..:7..:8..:9..:10..
 ##
-T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
-  :3151..
+T 127.0.0.1:61112 -> 127.0.0.1:6379 [AP]
+  *3..$3..SET..$4..rt_1..$1..0..*3..$3..SET..$1..0..$4..rt_1..*3..$3..SET..$4..rt_2..$1..1..*3..$3.
+  .SET..$1..1..$4..rt_2..*3..$3..SET..$4..rt_3..$1..2..*3..$3..SET..$1..2..$4..rt_3..*3..$3..SET..$
+  4..rt_4..$1..3..*3..$3..SET..$1..3..$4..rt_4..*3..$3..SET..$4..rt_5..$1..4..*3..$3..SET..$1..4..$
+  4..rt_5..*3..$3..SET..$4..rt_6..$1..5..*3..$3..SET..$1..5..$4..rt_6..*3..$3..SET..$4..rt_7..$1..6
+  ..*3..$3..SET..$1..6..$4..rt_7..*3..$3..SET..$4..rt_8..$1..7..*3..$3..SET..$1..7..$4..rt_8..*3..$
+  3..SET..$4..rt_9..$1..8..*3..$3..SET..$1..8..$4..rt_9..*3..$3..SET..$5..rt_10..$1..9..*3..$3..SET
+  ..$1..9..$5..rt_10..
 ##
-T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
-  :3152..:3153..:3154..:3155..:3156..:3157..:3158..:3159..:3160..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$7..rt_3151..$1..0..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$1..0..$7..rt_3151..*3..$3..SET..$7..rt_3152..$1..1..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$1..1..$7..rt_3152..*3..$3..SET..$7..rt_3153..$1..2..*3..$3..SET..$1..2..$7..rt_315
-  3..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$7..rt_3154..$1..3..*3..$3..SET..$1..3..$7..rt_3154..*3..$3..SET..$7..rt_3155..$1..
-  4..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$1..4..$7..rt_3155..*3..$3..SET..$7..rt_3156..$1..5..*3..$3..SET..$1..5..$7..rt_315
-  6..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$7..rt_3157..$1..6..*3..$3..SET..$1..6..$7..rt_3157..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$7..rt_3158..$1..7..*3..$3..SET..$1..7..$7..rt_3158..*3..$3..SET..$7..rt_3159..$1..
-  8..
-#
-T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
-  +OK..+OK..+OK..+OK..+OK..+OK..
-##
-T 127.0.0.1:54384 -> 127.0.0.1:6379 [AP]
-  *3..$3..SET..$1..8..$7..rt_3159..*3..$3..SET..$7..rt_3160..$1..9..*3..$3..SET..$1..9..$7..rt_316
-  0..
-##
-T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
-  +OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..
-##
-T 127.0.0.1:6379 -> 127.0.0.1:54384 [AP]
-  +OK..+OK..+OK..
+T 127.0.0.1:6379 -> 127.0.0.1:61112 [AP]
+  +OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+OK..+O
+  K..
 ```
 
 See note on 'Performance' for what impact this has.
@@ -136,10 +102,10 @@ The benchmarks are intended to be compatible with those of [redis-rs](https://gi
 
 In most cases the difference is small.
 
-| Benchmark        | redis-rs (the control)                                           | redis-async-rs  |
-| ---------------- | ---------------------------------------------------------------- | --------------- |
-| simple_getsetdel | 122,495 ns/iter (not pipelined)<br>47,767 ns/iter (pipelined)    | 56,321 ns/iter  |
-| complex          | 8,336,466 ns/iter (non pipelined)<br>527,535 ns/iter (pipelined) | 939,380 ns/iter |
+| Benchmark        | redis-rs (the control)                                            | redis-async-rs  |
+| ---------------- | ----------------------------------------------------------------- | --------------- |
+| simple_getsetdel | 132,856 ns/iter (not pipelined)<br>54,967 ns/iter (pipelined)     | 104,023 ns/iter |
+| complex          | 10,588,664 ns/iter (non pipelined)<br>695,551 ns/iter (pipelined) | 848,265 ns/iter |
 
 For `redis-rs` each benchmark has a pipelined and a non-pipelined version.  For `redis-async-rs` there is only one version as pipelining is handled implicitely.
 
