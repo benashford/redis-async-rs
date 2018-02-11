@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -9,23 +9,20 @@
  */
 
 extern crate futures;
-extern crate tokio_core;
 extern crate redis_async;
+extern crate tokio;
 
 use std::env;
 
 use futures::{Future, Stream};
 use futures::future;
 
-use tokio_core::reactor::Core;
+use tokio::executor::current_thread;
 
 use redis_async::client;
 use redis_async::resp::FromResp;
 
 fn main() {
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
     let topic = env::args().nth(1).unwrap_or("test-topic".to_string());
     let addr = env::args()
         .nth(2)
@@ -33,15 +30,14 @@ fn main() {
         .parse()
         .unwrap();
 
-    let msgs = client::pubsub_connect(&addr, &handle)
+    let msgs = client::pubsub_connect(&addr, current_thread::task_executor())
         .and_then(move |connection| connection.subscribe(topic));
-    let the_loop = msgs.map_err(|_| ())
-        .and_then(|msgs| {
-                      msgs.for_each(|message| {
-                                        println!("{}", String::from_resp(message).unwrap());
-                                        future::ok(())
-                                    })
-                  });
+    let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
+        msgs.for_each(|message| {
+            println!("{}", String::from_resp(message).unwrap());
+            future::ok(())
+        })
+    });
 
-    core.run(the_loop).unwrap();
+    current_thread::run(|_| current_thread::spawn(the_loop));
 }

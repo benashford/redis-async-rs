@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -30,11 +30,14 @@ pub enum Error {
     /// A remote error
     Remote(String),
 
+    /// End of stream - not necesserially an error if you're anticipating it
+    EndOfStream,
+
     /// An unexpected error, boxed to allow type-erasure.  In this context "unexpected" means
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
     /// failure.
-    Unexpected(Box<error::Error>),
+    Unexpected(Box<error::Error + Send>),
 }
 
 pub fn internal<T: Into<String>>(msg: T) -> Error {
@@ -57,7 +60,7 @@ impl From<oneshot::Canceled> for Error {
     }
 }
 
-impl<T: 'static> From<mpsc::SendError<T>> for Error {
+impl<T: 'static + Send> From<mpsc::SendError<T>> for Error {
     fn from(err: mpsc::SendError<T>) -> Error {
         Error::Unexpected(Box::new(err))
     }
@@ -70,6 +73,7 @@ impl error::Error for Error {
             Error::IO(ref err) => err.description(),
             Error::RESP(ref s, _) => s,
             Error::Remote(ref s) => s,
+            Error::EndOfStream => "End of Stream",
             Error::Unexpected(ref err) => err.description(),
         }
     }
@@ -80,6 +84,7 @@ impl error::Error for Error {
             Error::IO(ref err) => Some(err),
             Error::RESP(_, _) => None,
             Error::Remote(_) => None,
+            Error::EndOfStream => None,
             Error::Unexpected(ref err) => Some(err.as_ref()),
         }
     }

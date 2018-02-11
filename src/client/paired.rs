@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -13,9 +13,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::{future, Future, Sink, Stream};
+use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
-
-use tokio_core::reactor::Handle;
 
 use error;
 use resp;
@@ -26,30 +25,78 @@ type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Er
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-pub fn paired_connect(addr: &SocketAddr, handle: &Handle) -> PairedConnectionBox {
-    let handle = handle.clone();
-    let paired_con = connect(addr, &handle)
-        .map(move |connection| {
+pub fn paired_connect<E>(addr: &SocketAddr, executor: E) -> PairedConnectionBox
+where
+    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
+{
+    let paired_con = connect(addr)
+        .map_err(|e| e.into())
+        .and_then(move |connection| {
             let ClientConnection { sender, receiver } = connection;
             let (out_tx, out_rx) = mpsc::unbounded();
-            let sender = out_rx.fold(sender, |sender, msg| sender.send(msg).map_err(|_| ()));
+            let running = Arc::new(Mutex::new(true));
+            let sender_running = running.clone();
+            let sender = Box::new(
+                sender
+                    .sink_map_err(|e| error!("Sender error: {}", e))
+                    .send_all(out_rx)
+                    .then(move |r| {
+                        let mut lock = sender_running.lock().expect("Lock is tainted");
+                        *lock = false;
+                        match r {
+                            Ok(_) => {
+                                info!("Sender stream closed...");
+                                future::ok(())
+                            }
+                            Err(e) => {
+                                error!("Error occurred: {:?}", e);
+                                future::err(())
+                            }
+                        }
+                    }),
+            ) as Box<Future<Item = (), Error = ()> + Send>;
+
             let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
                 Arc::new(Mutex::new(VecDeque::new()));
             let receiver_queue = resp_queue.clone();
-            let receiver = receiver.for_each(move |msg| {
-                let mut queue = receiver_queue.lock().expect("Lock is tainted");
-                let dest = queue.pop_front().expect("Queue is empty");
-                match dest.send(msg) {
-                    Ok(()) => Ok(()),
-                    // Ignore error as the channel may have been legitimately closed in the meantime
-                    Err(_) => Ok(())
-                }
-            });
-            handle.spawn(sender.map(|_| ()));
-            handle.spawn(receiver.map_err(|_| ()));
-            PairedConnection {
-                out_tx: out_tx,
-                resp_queue: resp_queue,
+            let receiver = Box::new(
+                receiver
+                    .for_each(move |msg| {
+                        let mut queue = receiver_queue.lock().expect("Lock is tainted");
+                        let dest = queue.pop_front().expect("Queue is empty");
+                        let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
+                        if queue.is_empty() {
+                            let running = running.lock().expect("Lock is tainted");
+                            if *running {
+                                Ok(())
+                            } else {
+                                Err(error::Error::EndOfStream)
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .then(|result| match result {
+                        Ok(()) => future::ok(()),
+                        Err(error::Error::EndOfStream) => future::ok(()),
+                        Err(e) => future::err(e),
+                    })
+                    .map(|_| debug!("Closing the receiver stream, receiver closed"))
+                    .map_err(|e| error!("Error receiving message: {}", e)),
+            ) as Box<Future<Item = (), Error = ()> + Send>;
+
+            match executor
+                .execute(sender)
+                .and_then(|_| executor.execute(receiver))
+            {
+                Ok(()) => future::ok(PairedConnection {
+                    out_tx: out_tx,
+                    resp_queue: resp_queue,
+                }),
+                Err(e) => future::err(error::internal(format!(
+                    "Cannot start background tasks: {:?}",
+                    e
+                ))),
             }
         })
         .map_err(|e| e.into());
@@ -61,7 +108,7 @@ pub struct PairedConnection {
     resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
 }
 
-pub type SendBox<T> = Box<Future<Item = T, Error = error::Error>>;
+pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
 
 /// Fire-and-forget, used to force the return type of a `send` command where the result is not required
 /// to satisfy the generic return type.
@@ -90,11 +137,13 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T: resp::FromResp + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
+    pub fn send<T: resp::FromResp + Send + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
         match &msg {
             &resp::RespValue::Array(_) => (),
             _ => {
-                return Box::new(future::err(error::internal("Command must be a RespValue::Array")))
+                return Box::new(future::err(error::internal(
+                    "Command must be a RespValue::Array",
+                )))
             }
         }
 
@@ -106,14 +155,14 @@ impl PairedConnection {
         self.out_tx.unbounded_send(msg).expect("Failed to send");
 
         let future = rx.then(|v| match v {
-                                 Ok(v) => future::result(T::from_resp(v)),
-                                 Err(e) => future::err(e.into()),
-                             });
+            Ok(v) => future::result(T::from_resp(v)),
+            Err(e) => future::err(e.into()),
+        });
         Box::new(future)
     }
 }
 
-#[cfg(feature="commands")]
+#[cfg(feature = "commands")]
 ///
 /// Implementing Redis commands as specific Rust functions, intended to be easier to use that manually constructing
 /// each as appropriate.
@@ -129,7 +178,7 @@ mod commands {
     use futures::future;
 
     use error;
-    use resp::{ToRespString, RespValue};
+    use resp::{RespValue, ToRespString};
 
     use super::SendBox;
 
@@ -219,7 +268,8 @@ mod commands {
 
     impl super::PairedConnection {
         pub fn bitcount<C>(&self, cmd: C) -> SendBox<usize>
-            where C: BitcountCommand
+        where
+            C: BitcountCommand,
         {
             self.send(cmd.to_cmd())
         }
@@ -274,10 +324,9 @@ mod commands {
     impl BitfieldType {
         fn to_cmd(&self) -> RespValue {
             match self {
-                    &BitfieldType::Signed(size) => format!("i{}", size),
-                    &BitfieldType::Unsigned(size) => format!("u{}", size),
-                }
-                .into()
+                &BitfieldType::Signed(size) => format!("i{}", size),
+                &BitfieldType::Unsigned(size) => format!("u{}", size),
+            }.into()
         }
     }
 
@@ -291,11 +340,10 @@ mod commands {
     impl BitfieldOverflow {
         fn to_cmd(&self) -> RespValue {
             match self {
-                    &BitfieldOverflow::Wrap => "WRAP",
-                    &BitfieldOverflow::Sat => "SAT",
-                    &BitfieldOverflow::Fail => "FAIL",
-                }
-                .into()
+                &BitfieldOverflow::Wrap => "WRAP",
+                &BitfieldOverflow::Sat => "SAT",
+                &BitfieldOverflow::Fail => "FAIL",
+            }.into()
         }
     }
 
@@ -308,18 +356,16 @@ mod commands {
     impl BitfieldTypeAndValue {
         fn type_cmd(&self) -> RespValue {
             match self {
-                    &BitfieldTypeAndValue::Signed(size, _) => format!("i{}", size),
-                    &BitfieldTypeAndValue::Unsigned(size, _) => format!("u{}", size),
-                }
-                .into()
+                &BitfieldTypeAndValue::Signed(size, _) => format!("i{}", size),
+                &BitfieldTypeAndValue::Unsigned(size, _) => format!("u{}", size),
+            }.into()
         }
 
         fn value_cmd(&self) -> RespValue {
             match self {
-                    &BitfieldTypeAndValue::Signed(_, amt) => amt.to_string(),
-                    &BitfieldTypeAndValue::Unsigned(_, amt) => amt.to_string(),
-                }
-                .into()
+                &BitfieldTypeAndValue::Signed(_, amt) => amt.to_string(),
+                &BitfieldTypeAndValue::Unsigned(_, amt) => amt.to_string(),
+            }.into()
         }
     }
 
@@ -332,10 +378,9 @@ mod commands {
     impl BitfieldOffset {
         fn to_cmd(&self) -> RespValue {
             match self {
-                    &BitfieldOffset::Bits(size) => size.to_string(),
-                    &BitfieldOffset::Positional(size) => format!("#{}", size),
-                }
-                .into()
+                &BitfieldOffset::Bits(size) => size.to_string(),
+                &BitfieldOffset::Positional(size) => format!("#{}", size),
+            }.into()
         }
     }
 
@@ -377,7 +422,8 @@ mod commands {
 
     impl super::PairedConnection {
         pub fn bitfield<K>(&self, (key, cmds): (K, &BitfieldCommands)) -> SendBox<Vec<Option<i64>>>
-            where K: ToRespString + Into<RespValue>
+        where
+            K: ToRespString + Into<RespValue>,
         {
             self.send(cmds.to_cmd(key.into()))
         }
@@ -394,19 +440,19 @@ mod commands {
     impl From<BitOp> for RespValue {
         fn from(op: BitOp) -> RespValue {
             match op {
-                    BitOp::And => "AND",
-                    BitOp::Or => "OR",
-                    BitOp::Xor => "XOR",
-                    BitOp::Not => "NOT",
-                }
-                .into()
+                BitOp::And => "AND",
+                BitOp::Or => "OR",
+                BitOp::Xor => "XOR",
+                BitOp::Not => "NOT",
+            }.into()
         }
     }
 
     impl super::PairedConnection {
         pub fn bitop<K, C>(&self, (op, destkey, keys): (BitOp, K, C)) -> SendBox<i64>
-            where K: ToRespString + Into<RespValue>,
-                  C: CommandCollection
+        where
+            K: ToRespString + Into<RespValue>,
+            C: CommandCollection,
         {
             let mut cmd = Vec::new();
             cmd.push(op.into());
@@ -416,7 +462,9 @@ mod commands {
             if cmd.len() > 2 {
                 self.send(RespValue::Array(cmd))
             } else {
-                Box::new(future::err(error::internal("BITOP command needs at least one key")))
+                Box::new(future::err(error::internal(
+                    "BITOP command needs at least one key",
+                )))
             }
         }
     }
@@ -426,8 +474,9 @@ mod commands {
     }
 
     impl<K, B> BitposCommand for (K, B, usize)
-        where K: ToRespString + Into<RespValue>,
-              B: ToRespString + Into<RespValue>
+    where
+        K: ToRespString + Into<RespValue>,
+        B: ToRespString + Into<RespValue>,
     {
         fn to_cmd(self) -> RespValue {
             resp_array!["BITPOS", self.0, self.1, self.2.to_string()]
@@ -435,21 +484,25 @@ mod commands {
     }
 
     impl<K, B> BitposCommand for (K, B, usize, usize)
-        where K: ToRespString + Into<RespValue>,
-              B: ToRespString + Into<RespValue>
+    where
+        K: ToRespString + Into<RespValue>,
+        B: ToRespString + Into<RespValue>,
     {
         fn to_cmd(self) -> RespValue {
-            resp_array!["BITPOS",
-                        self.0,
-                        self.1,
-                        self.2.to_string(),
-                        self.3.to_string()]
+            resp_array![
+                "BITPOS",
+                self.0,
+                self.1,
+                self.2.to_string(),
+                self.3.to_string()
+            ]
         }
     }
 
     impl super::PairedConnection {
         pub fn bitpos<C>(&self, cmd: C) -> SendBox<i64>
-            where C: BitposCommand
+        where
+            C: BitposCommand,
         {
             self.send(cmd.to_cmd())
         }
@@ -460,7 +513,8 @@ mod commands {
     impl super::PairedConnection {
         // TODO - there may be a way of generalising this kind of thing
         pub fn del<C>(&self, keys: (C)) -> SendBox<usize>
-            where C: CommandCollection
+        where
+            C: CommandCollection,
         {
             let mut cmd = Vec::new();
             cmd.push("DEL".into());
@@ -469,7 +523,9 @@ mod commands {
             if cmd.len() > 1 {
                 self.send(RespValue::Array(cmd))
             } else {
-                Box::new(future::err(error::internal("DEL command needs at least one key")))
+                Box::new(future::err(error::internal(
+                    "DEL command needs at least one key",
+                )))
             }
         }
     }
@@ -477,8 +533,9 @@ mod commands {
     impl super::PairedConnection {
         // TODO: incomplete implementation
         pub fn set<K, V>(&self, (key, value): (K, V)) -> SendBox<()>
-            where K: ToRespString + Into<RespValue>,
-                  V: ToRespString + Into<RespValue>
+        where
+            K: ToRespString + Into<RespValue>,
+            V: ToRespString + Into<RespValue>,
         {
             self.send(resp_array!["SET", key, value])
         }
@@ -491,7 +548,7 @@ mod commands {
 
         use tokio_core::reactor::Core;
 
-        use super::{BitfieldCommands, BitfieldTypeAndValue, BitfieldOffset, BitfieldOverflow};
+        use super::{BitfieldCommands, BitfieldOffset, BitfieldOverflow, BitfieldTypeAndValue};
 
         use super::super::error::Error;
 
@@ -516,8 +573,8 @@ mod commands {
         fn append_test() {
             let (mut core, connection) = setup_and_delete(vec!["APPENDKEY"]);
 
-            let connection = connection
-                .and_then(|connection| connection.append(("APPENDKEY", "ABC")));
+            let connection =
+                connection.and_then(|connection| connection.append(("APPENDKEY", "ABC")));
 
             let count = core.run(connection).unwrap();
             assert_eq!(count, 3);
@@ -531,12 +588,12 @@ mod commands {
                 connection
                     .set(("BITCOUNT_KEY", "foobar"))
                     .and_then(move |_| {
-                                  let mut counts = Vec::new();
-                                  counts.push(connection.bitcount("BITCOUNT_KEY"));
-                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
-                                  counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
-                                  future::join_all(counts)
-                              })
+                        let mut counts = Vec::new();
+                        counts.push(connection.bitcount("BITCOUNT_KEY"));
+                        counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
+                        counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
+                        future::join_all(counts)
+                    })
             });
 
             let counts = core.run(connection).unwrap();
@@ -552,11 +609,15 @@ mod commands {
 
             let connection = connection.and_then(|connection| {
                 let mut bitfield_commands = BitfieldCommands::new();
-                bitfield_commands.incrby(BitfieldOffset::Bits(100),
-                                         BitfieldTypeAndValue::Unsigned(2, 1));
+                bitfield_commands.incrby(
+                    BitfieldOffset::Bits(100),
+                    BitfieldTypeAndValue::Unsigned(2, 1),
+                );
                 bitfield_commands.overflow(BitfieldOverflow::Sat);
-                bitfield_commands.incrby(BitfieldOffset::Bits(102),
-                                         BitfieldTypeAndValue::Unsigned(2, 1));
+                bitfield_commands.incrby(
+                    BitfieldOffset::Bits(102),
+                    BitfieldTypeAndValue::Unsigned(2, 1),
+                );
 
                 connection.bitfield(("BITFIELD_KEY", &bitfield_commands))
             });
@@ -574,8 +635,10 @@ mod commands {
             let connection = connection.and_then(|connection| {
                 let mut bitfield_commands = BitfieldCommands::new();
                 bitfield_commands.overflow(BitfieldOverflow::Fail);
-                bitfield_commands.incrby(BitfieldOffset::Bits(102),
-                                         BitfieldTypeAndValue::Unsigned(2, 4));
+                bitfield_commands.incrby(
+                    BitfieldOffset::Bits(102),
+                    BitfieldTypeAndValue::Unsigned(2, 4),
+                );
                 connection.bitfield(("BITFIELD_NIL_KEY", &bitfield_commands))
             });
 

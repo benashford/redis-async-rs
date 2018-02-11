@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -9,28 +9,26 @@
  */
 
 extern crate futures;
-extern crate tokio_core;
 #[macro_use]
 extern crate redis_async;
+extern crate tokio;
 
 use std::env;
 
 use futures::{future, Future, Sink, Stream};
 
-use tokio_core::reactor::Core;
+use tokio::executor::current_thread;
 
 use redis_async::client;
 
 fn main() {
-    let mut core = Core::new().unwrap();
-
     let addr = env::args()
         .nth(1)
         .unwrap_or("127.0.0.1:6379".to_string())
         .parse()
         .unwrap();
 
-    let monitor = client::connect(&addr, &core.handle())
+    let monitor = client::connect(&addr)
         .map_err(|e| e.into())
         .and_then(|connection| {
             let client::ClientConnection { sender, receiver } = connection;
@@ -38,12 +36,12 @@ fn main() {
                 .send(resp_array!["MONITOR"])
                 .map_err(|e| e.into())
                 .and_then(move |_| {
-                              receiver.for_each(|incoming| {
-                                                    println!("{:?}", incoming);
-                                                    future::ok(())
-                                                })
-                          })
+                    receiver.for_each(|incoming| {
+                        println!("{:?}", incoming);
+                        future::ok(())
+                    })
+                })
         });
 
-    core.run(monitor).unwrap();
+    current_thread::run(|_| current_thread::spawn(monitor.map_err(|e| println!("ERROR: {:?}", e))));
 }

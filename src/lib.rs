@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -55,7 +55,9 @@
 
 extern crate bytes;
 extern crate futures;
-extern crate tokio_core;
+#[macro_use]
+extern crate log;
+extern crate tokio;
 extern crate tokio_io;
 
 #[macro_use]
