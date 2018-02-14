@@ -33,11 +33,14 @@ pub enum Error {
     /// End of stream - not necesserially an error if you're anticipating it
     EndOfStream,
 
-    /// An unexpected error, boxed to allow type-erasure.  In this context "unexpected" means
+    /// An unexpected error.  In this context "unexpected" means
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
     /// chains of futures; but it occurring at runtime should be considered a catastrophic
     /// failure.
-    Unexpected(Box<error::Error + Send>),
+    ///
+    /// If any error is propagated this way that needs to be handled, then it should be made into
+    /// a proper option.
+    Unexpected(String),
 }
 
 pub fn internal<T: Into<String>>(msg: T) -> Error {
@@ -56,13 +59,13 @@ impl From<io::Error> for Error {
 
 impl From<oneshot::Canceled> for Error {
     fn from(err: oneshot::Canceled) -> Error {
-        Error::Unexpected(Box::new(err))
+        Error::Unexpected(format!("Oneshot was cancelled before use: {}", err))
     }
 }
 
 impl<T: 'static + Send> From<mpsc::SendError<T>> for Error {
     fn from(err: mpsc::SendError<T>) -> Error {
-        Error::Unexpected(Box::new(err))
+        Error::Unexpected(format!("Cannot write to channel: {}", err))
     }
 }
 
@@ -74,7 +77,7 @@ impl error::Error for Error {
             Error::RESP(ref s, _) => s,
             Error::Remote(ref s) => s,
             Error::EndOfStream => "End of Stream",
-            Error::Unexpected(ref err) => err.description(),
+            Error::Unexpected(ref err) => err,
         }
     }
 
@@ -85,7 +88,7 @@ impl error::Error for Error {
             Error::RESP(_, _) => None,
             Error::Remote(_) => None,
             Error::EndOfStream => None,
-            Error::Unexpected(ref err) => Some(err.as_ref()),
+            Error::Unexpected(_) => None,
         }
     }
 }

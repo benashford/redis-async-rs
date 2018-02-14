@@ -22,7 +22,7 @@ use resp;
 use resp::FromResp;
 use super::connect::{connect, ClientConnection};
 
-fn err<S>(msg: S) -> Box<Future<Item = (), Error = error::Error>>
+fn err<S>(msg: S) -> Box<Future<Item = (), Error = error::Error> + Send>
 where
     S: Into<String>,
 {
@@ -37,7 +37,7 @@ pub fn pubsub_connect<E>(
     executor: E,
 ) -> Box<Future<Item = PubsubConnection, Error = error::Error>>
 where
-    E: Executor<Box<Future<Item = (), Error = ()>>> + 'static,
+    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
 {
     let pubsub_con = connect(addr)
         .map_err(|e| e.into())
@@ -50,7 +50,7 @@ where
                     .sink_map_err(|e| error!("Sending socket error: {}", e))
                     .send_all(out_rx.map_err(|()| error!("Outgoing message channel error")))
                     .map(|_| debug!("Send all completed successfully")),
-            ) as Box<Future<Item = (), Error = ()>>;
+            ) as Box<Future<Item = (), Error = ()> + Send>;
 
             let subs = Arc::new(Mutex::new(PubsubSubscriptions {
                 pending: HashMap::new(),
@@ -91,7 +91,7 @@ where
                             Ok(()) => {
                                 let ok =
                                     future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-                                Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                                Box::new(ok)
                             }
                             Err(()) => err("Cannot send notification of subscription"),
                         }
@@ -105,7 +105,7 @@ where
                         } else {
                             future::ok(())
                         };
-                        Box::new(result) as Box<Future<Item = (), Error = error::Error>>
+                        Box::new(result)
                     } else {
                         err("Receieved unsubscription notification from a topic we're not subscribed to")
                     }
@@ -113,11 +113,11 @@ where
                     match subs.confirmed.get(&topic) {
                         Some(tx) => {
                             let future = tx.clone().send(msg).map(|_| ()).map_err(|e| e.into());
-                            Box::new(future) as Box<Future<Item = (), Error = error::Error>>
+                            Box::new(future)
                         }
                         None => {
                             let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-                            Box::new(ok) as Box<Future<Item = (), Error = error::Error>>
+                            Box::new(ok)
                         }
                     }
                 } else {
@@ -133,7 +133,7 @@ where
                     })
                     .map(|_| debug!("End of PUBSUB connection, successful"))
                     .map_err(|e| error!("PUBSUB Receiver error: {}", e)),
-            ) as Box<Future<Item = (), Error = ()>>;
+            ) as Box<Future<Item = (), Error = ()> + Send>;
 
             match executor
                 .execute(sender)
