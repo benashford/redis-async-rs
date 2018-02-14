@@ -171,13 +171,12 @@ impl PubsubConnection {
     pub fn subscribe<T: Into<String>>(
         &self,
         topic: T,
-    ) -> Box<Future<Item = PubsubStream, Error = error::Error>> {
+    ) -> Box<Future<Item = PubsubStream, Error = error::Error> + Send> {
         let topic = topic.into();
         let mut subs = self.subscriptions.lock().expect("Lock is tainted");
 
         // TODO - check arbitrary buffer size
         let (tx, rx) = mpsc::channel(10);
-        let stream = Box::new(rx) as Box<Stream<Item = resp::RespValue, Error = ()>>;
         if subs.confirmed.contains_key(&topic) || subs.pending.contains_key(&topic) {
             return Box::new(future::err(error::internal("Already subscribed")));
         }
@@ -189,7 +188,7 @@ impl PubsubConnection {
         match self.out_tx.unbounded_send(subscribe_msg) {
             Ok(_) => {
                 let done = notification_rx
-                    .map(|_| PubsubStream::new(topic, stream, new_out_tx))
+                    .map(|_| PubsubStream::new(topic, rx, new_out_tx))
                     .map_err(|e| e.into());
                 Box::new(done)
             }
@@ -200,18 +199,19 @@ impl PubsubConnection {
 
 pub struct PubsubStream {
     topic: String,
-    underlying: Box<Stream<Item = resp::RespValue, Error = ()>>,
+    underlying: mpsc::Receiver<resp::RespValue>,
     out_tx: mpsc::UnboundedSender<resp::RespValue>,
 }
 
 impl PubsubStream {
-    fn new<S>(topic: String, stream: S, out_tx: mpsc::UnboundedSender<resp::RespValue>) -> Self
-    where
-        S: Stream<Item = resp::RespValue, Error = ()> + 'static,
-    {
+    fn new(
+        topic: String,
+        stream: mpsc::Receiver<resp::RespValue>,
+        out_tx: mpsc::UnboundedSender<resp::RespValue>,
+    ) -> Self {
         PubsubStream {
             topic: topic,
-            underlying: Box::new(stream),
+            underlying: stream,
             out_tx: out_tx,
         }
     }
