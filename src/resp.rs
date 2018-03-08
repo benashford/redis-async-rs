@@ -148,6 +148,60 @@ impl FromResp for () {
     }
 }
 
+impl<A, B> FromResp for (A, B)
+where
+    A: FromResp,
+    B: FromResp,
+{
+    fn from_resp_int(resp: RespValue) -> Result<(A, B), Error> {
+        match resp {
+            RespValue::Array(ary) => {
+                if ary.len() == 2 {
+                    let mut ary_iter = ary.into_iter();
+                    Ok((
+                        A::from_resp(ary_iter.next().expect("No value"))?,
+                        B::from_resp(ary_iter.next().expect("No value"))?,
+                    ))
+                } else {
+                    Err(Error::RESP(
+                        format!("Array needs to be 2 elements, is: {}", ary.len()),
+                        None,
+                    ))
+                }
+            }
+            _ => Err(error::resp("Unexpected value", resp)),
+        }
+    }
+}
+
+impl<A, B, C> FromResp for (A, B, C)
+where
+    A: FromResp,
+    B: FromResp,
+    C: FromResp,
+{
+    fn from_resp_int(resp: RespValue) -> Result<(A, B, C), Error> {
+        match resp {
+            RespValue::Array(ary) => {
+                if ary.len() == 3 {
+                    let mut ary_iter = ary.into_iter();
+                    Ok((
+                        A::from_resp(ary_iter.next().expect("No value"))?,
+                        B::from_resp(ary_iter.next().expect("No value"))?,
+                        C::from_resp(ary_iter.next().expect("No value"))?,
+                    ))
+                } else {
+                    Err(Error::RESP(
+                        format!("Array needs to be 3 elements, is: {}", ary.len()),
+                        None,
+                    ))
+                }
+            }
+            _ => Err(error::resp("Unexpected value", resp)),
+        }
+    }
+}
+
 /// Macro to create a RESP array, useful for preparing commands to send.  Elements can be any type, or a mixture
 /// of types, that satisfy `Into<RespValue>`.
 ///
