@@ -19,7 +19,7 @@ use tokio;
 
 use error;
 use resp;
-use super::connect::{connect, ClientConnection};
+use super::connect::{close_sender, connect, ClientConnection};
 
 type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
 
@@ -37,16 +37,24 @@ pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
                 .sink_map_err(|e| error!("Sender error: {}", e))
                 .send_all(out_rx)
                 .then(move |r| {
+                    println!("Beginning of the end of paired connection");
                     let mut lock = sender_running.lock().expect("Lock is tainted");
                     *lock = false;
                     match r {
-                        Ok(_) => {
-                            info!("Sender stream closed...");
-                            future::ok(())
+                        Ok((sender, _)) => {
+                            println!("Happy ending");
+                            info!("Sender stream closing...");
+                            Box::new(
+                                close_sender(sender)
+                                    .map(|()| println!("SENDER CLOSED!"))
+                                    .map_err(|()| error!("Error closing stream")),
+                            )
+                                as Box<Future<Item = (), Error = ()> + Send>
                         }
                         Err(e) => {
+                            println!("Unhappy ending");
                             error!("Error occurred: {:?}", e);
-                            future::err(())
+                            Box::new(future::err(()))
                         }
                     }
                 }),

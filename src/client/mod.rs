@@ -41,6 +41,8 @@ mod test {
     use error;
     use resp;
 
+    use super::connect::close_sender;
+
     fn run_and_wait<R, E, F>(f: F) -> Result<R, E>
     where
         F: Future<Item = R, Error = E> + Send + 'static,
@@ -62,13 +64,14 @@ mod test {
                 let a = connection
                     .sender
                     .send(resp_array!["PING", "TEST"])
-                    .map(|mut sender| sender.close())
                     .map_err(|e| e.into());
                 let b = connection.receiver.take(1).collect();
-                a.join(b)
+                a.join(b).and_then(|(sender, values)| {
+                    close_sender(sender).map_err(|e| e.into()).map(|()| values)
+                })
             });
 
-        let (_, values) = run_and_wait(connection).unwrap();
+        let values = run_and_wait(connection).unwrap();
 
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], "TEST".into());
@@ -89,12 +92,14 @@ mod test {
                 let send = connection
                     .sender
                     .send_all(stream::iter_ok::<_, io::Error>(ops))
-                    .map(|(mut sender, _)| sender.close())
+                    .map(|(sender, _)| sender)
                     .map_err(|e| e.into());
                 let receive = connection.receiver.skip(1001).take(1).collect();
-                send.join(receive)
+                send.join(receive).and_then(|(sender, values)| {
+                    close_sender(sender).map_err(|e| e.into()).map(|()| values)
+                })
             });
-        let (_, values) = run_and_wait(connection).unwrap();
+        let values = run_and_wait(connection).unwrap();
         assert_eq!(values.len(), 1);
         let values = match &values[0] {
             &resp::RespValue::Array(ref values) => values.clone(),

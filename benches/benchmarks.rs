@@ -28,10 +28,6 @@ use tokio::runtime::Runtime;
 
 use redis_async::client;
 
-fn open_paired_connection(addr: &SocketAddr) -> client::PairedConnection {
-    client::paired_connect(addr).wait().expect("No connection")
-}
-
 fn spawn_and_wait<R, E, F>(runtime: &mut Runtime, f: F) -> Result<R, E>
 where
     R: Send + 'static,
@@ -43,13 +39,17 @@ where
     rx.wait().expect("Cannot wait")
 }
 
+fn open_paired_connection(runtime: &mut Runtime, addr: &SocketAddr) -> client::PairedConnection {
+    spawn_and_wait(runtime, client::paired_connect(addr)).expect("No connection")
+}
+
 #[bench]
 fn bench_simple_getsetdel(b: &mut Bencher) {
     let addr = "127.0.0.1:6379".parse().unwrap();
 
     let mut runtime = Runtime::new().expect("Runtime");
 
-    let connection = open_paired_connection(&addr);
+    let connection = open_paired_connection(&mut runtime, &addr);
 
     b.iter(|| {
         faf!(connection.send(resp_array!["SET", "test_key", "42"]));
@@ -58,6 +58,8 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
         let get_set = get.join(del);
         let _: (String, String) = spawn_and_wait(&mut runtime, get_set).unwrap();
     });
+
+    runtime.shutdown_now().wait().unwrap();
 }
 
 #[bench]
@@ -66,7 +68,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
 
     let mut runtime = Runtime::new().expect("Runtime");
 
-    let connection = open_paired_connection(&addr);
+    let connection = open_paired_connection(&mut runtime, &addr);
 
     let data_size = 100;
 
@@ -83,6 +85,8 @@ fn bench_big_pipeline(b: &mut Bencher) {
         let last_get = gets.remove(data_size - 1);
         let _: String = spawn_and_wait(&mut runtime, last_get).unwrap();
     });
+
+    runtime.shutdown_now().wait().unwrap();
 }
 
 #[bench]
@@ -91,7 +95,7 @@ fn bench_complex_pipeline(b: &mut Bencher) {
 
     let mut runtime = Runtime::new().expect("Runtime");
 
-    let connection_outer = Arc::new(open_paired_connection(&addr));
+    let connection_outer = Arc::new(open_paired_connection(&mut runtime, &addr));
 
     let data_size = 100;
 
@@ -113,4 +117,6 @@ fn bench_complex_pipeline(b: &mut Bencher) {
         let outcome: Vec<String> = spawn_and_wait(&mut runtime, all_sets).expect("Answers");
         assert_eq!(outcome.len(), 100);
     });
+
+    runtime.shutdown_now().wait().unwrap();
 }
