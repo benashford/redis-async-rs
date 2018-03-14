@@ -17,8 +17,6 @@ use std::env;
 
 use futures::{future, Future, Sink, Stream};
 
-use tokio::executor::current_thread;
-
 use redis_async::client;
 
 fn main() {
@@ -43,5 +41,5 @@ fn main() {
                 })
         });
 
-    current_thread::run(|_| current_thread::spawn(monitor.map_err(|e| println!("ERROR: {:?}", e))));
+    tokio::run(monitor.map_err(|e| println!("ERROR: {:?}", e)));
 }

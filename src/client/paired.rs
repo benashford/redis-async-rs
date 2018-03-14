@@ -13,93 +13,82 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::{future, Future, Sink, Stream};
-use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
+
+use tokio;
 
 use error;
 use resp;
 use super::connect::{connect, ClientConnection};
 
-type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error>>;
+type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
 
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-pub fn paired_connect<E>(addr: &SocketAddr, executor: E) -> PairedConnectionBox
-where
-    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
-{
-    let paired_con = connect(addr)
-        .map_err(|e| e.into())
-        .and_then(move |connection| {
-            let ClientConnection { sender, receiver } = connection;
-            let (out_tx, out_rx) = mpsc::unbounded();
-            let running = Arc::new(Mutex::new(true));
-            let sender_running = running.clone();
-            let sender = Box::new(
-                sender
-                    .sink_map_err(|e| error!("Sender error: {}", e))
-                    .send_all(out_rx)
-                    .then(move |r| {
-                        let mut lock = sender_running.lock().expect("Lock is tainted");
-                        *lock = false;
-                        match r {
-                            Ok(_) => {
-                                info!("Sender stream closed...");
-                                future::ok(())
-                            }
-                            Err(e) => {
-                                error!("Error occurred: {:?}", e);
-                                future::err(())
-                            }
+pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
+    let paired_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
+        let ClientConnection { sender, receiver } = connection;
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let running = Arc::new(Mutex::new(true));
+        let sender_running = running.clone();
+        let sender = Box::new(
+            sender
+                .sink_map_err(|e| error!("Sender error: {}", e))
+                .send_all(out_rx)
+                .then(move |r| {
+                    let mut lock = sender_running.lock().expect("Lock is tainted");
+                    *lock = false;
+                    match r {
+                        Ok(_) => {
+                            info!("Sender stream closed...");
+                            future::ok(())
                         }
-                    }),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
-
-            let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
-                Arc::new(Mutex::new(VecDeque::new()));
-            let receiver_queue = resp_queue.clone();
-            let receiver = Box::new(
-                receiver
-                    .for_each(move |msg| {
-                        let mut queue = receiver_queue.lock().expect("Lock is tainted");
-                        let dest = queue.pop_front().expect("Queue is empty");
-                        let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
-                        if queue.is_empty() {
-                            let running = running.lock().expect("Lock is tainted");
-                            if *running {
-                                Ok(())
-                            } else {
-                                Err(error::Error::EndOfStream)
-                            }
-                        } else {
-                            Ok(())
+                        Err(e) => {
+                            error!("Error occurred: {:?}", e);
+                            future::err(())
                         }
-                    })
-                    .then(|result| match result {
-                        Ok(()) => future::ok(()),
-                        Err(error::Error::EndOfStream) => future::ok(()),
-                        Err(e) => future::err(e),
-                    })
-                    .map(|_| debug!("Closing the receiver stream, receiver closed"))
-                    .map_err(|e| error!("Error receiving message: {}", e)),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
-
-            match executor
-                .execute(sender)
-                .and_then(|_| executor.execute(receiver))
-            {
-                Ok(()) => future::ok(PairedConnection {
-                    out_tx: out_tx,
-                    resp_queue: resp_queue,
+                    }
                 }),
-                Err(e) => future::err(error::internal(format!(
-                    "Cannot start background tasks: {:?}",
-                    e
-                ))),
-            }
-        })
-        .map_err(|e| e.into());
+        ) as Box<Future<Item = (), Error = ()> + Send>;
+
+        let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        let receiver_queue = resp_queue.clone();
+        let receiver = Box::new(
+            receiver
+                .for_each(move |msg| {
+                    let mut queue = receiver_queue.lock().expect("Lock is tainted");
+                    let dest = queue.pop_front().expect("Queue is empty");
+                    let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
+                    if queue.is_empty() {
+                        let running = running.lock().expect("Lock is tainted");
+                        if *running {
+                            Ok(())
+                        } else {
+                            Err(error::Error::EndOfStream)
+                        }
+                    } else {
+                        Ok(())
+                    }
+                })
+                .then(|result| match result {
+                    Ok(()) => future::ok(()),
+                    Err(error::Error::EndOfStream) => future::ok(()),
+                    Err(e) => future::err(e),
+                })
+                .map(|_| debug!("Closing the receiver stream, receiver closed"))
+                .map_err(|e| error!("Error receiving message: {}", e)),
+        ) as Box<Future<Item = (), Error = ()> + Send>;
+
+        let _ = tokio::spawn(sender);
+        let _ = tokio::spawn(receiver);
+
+        PairedConnection {
+            out_tx: out_tx,
+            resp_queue: resp_queue,
+        }
+    });
     Box::new(paired_con)
 }
 

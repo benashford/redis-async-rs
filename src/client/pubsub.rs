@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use futures::{Future, Poll, Sink, Stream};
 use futures::future;
-use futures::future::Executor;
 use futures::sync::{mpsc, oneshot};
+
+use tokio;
 
 use error;
 use resp;
@@ -32,123 +33,110 @@ where
 /// Used for Redis's PUBSUB functionality.
 ///
 /// Returns a future that resolves to a `PubsubConnection`.
-pub fn pubsub_connect<E>(
+pub fn pubsub_connect(
     addr: &SocketAddr,
-    executor: E,
-) -> Box<Future<Item = PubsubConnection, Error = error::Error>>
-where
-    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
-{
-    let pubsub_con = connect(addr)
-        .map_err(|e| e.into())
-        .and_then(move |connection| {
-            let ClientConnection { sender, receiver } = connection;
-            let (out_tx, out_rx) = mpsc::unbounded();
+) -> Box<Future<Item = PubsubConnection, Error = error::Error> + Send> {
+    let pubsub_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
+        let ClientConnection { sender, receiver } = connection;
+        let (out_tx, out_rx) = mpsc::unbounded();
 
-            let sender = Box::new(
-                sender
-                    .sink_map_err(|e| error!("Sending socket error: {}", e))
-                    .send_all(out_rx.map_err(|()| error!("Outgoing message channel error")))
-                    .map(|_| debug!("Send all completed successfully")),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
+        let sender = Box::new(
+            sender
+                .sink_map_err(|e| error!("Sending socket error: {}", e))
+                .send_all(out_rx.map_err(|()| error!("Outgoing message channel error")))
+                .map(|_| debug!("Send all completed successfully")),
+        ) as Box<Future<Item = (), Error = ()> + Send>;
 
-            let subs = Arc::new(Mutex::new(PubsubSubscriptions {
-                pending: HashMap::new(),
-                confirmed: HashMap::new(),
-            }));
-            let subs_reader = subs.clone();
+        let subs = Arc::new(Mutex::new(PubsubSubscriptions {
+            pending: HashMap::new(),
+            confirmed: HashMap::new(),
+        }));
+        let subs_reader = subs.clone();
 
-            let receiver_raw = receiver.for_each(move |msg| {
-                let (message_type, topic, msg) = match msg {
-                    resp::RespValue::Array(mut messages) => match (
-                        messages.pop(),
-                        messages.pop(),
-                        messages.pop(),
-                        messages.pop(),
-                    ) {
-                        (Some(msg), Some(topic), Some(message_type), None) => {
-                            match (msg, String::from_resp(topic), message_type) {
-                                (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
-                                    (bytes, topic, msg)
-                                }
-                                _ => return err("RESP Message structure invalid"),
+        let receiver_raw = receiver.for_each(move |msg| {
+            let (message_type, topic, msg) = match msg {
+                resp::RespValue::Array(mut messages) => match (
+                    messages.pop(),
+                    messages.pop(),
+                    messages.pop(),
+                    messages.pop(),
+                ) {
+                    (Some(msg), Some(topic), Some(message_type), None) => {
+                        match (msg, String::from_resp(topic), message_type) {
+                            (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
+                                (bytes, topic, msg)
                             }
+                            _ => return err("RESP Message structure invalid"),
                         }
-                        _ => {
-                            return err(format!(
-                                "Incorrect number of records in PUBSUB message: {}",
-                                messages.len()
-                            ))
-                        }
-                    },
-                    _ => return err("Incorrect message type"),
-                };
-                let mut subs = subs_reader.lock().expect("Lock is tainted");
-                if message_type == b"subscribe" {
-                    if let Some((tx, notification_tx)) = subs.pending.remove(&topic) {
-                        subs.confirmed.insert(topic, tx);
-                        match notification_tx.send(()) {
-                            Ok(()) => {
-                                let ok =
-                                    future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-                                Box::new(ok)
-                            }
-                            Err(()) => err("Cannot send notification of subscription"),
-                        }
-                    } else {
-                        err("Received subscribe notification that wasn't expected")
                     }
-                } else if message_type == b"unsubscribe" {
-                    if let Some(_) = subs.confirmed.remove(&topic) {
-                        let result = if subs.confirmed.is_empty() {
-                            future::err(error::Error::EndOfStream)
-                        } else {
-                            future::ok(())
-                        };
-                        Box::new(result)
-                    } else {
-                        err("Receieved unsubscription notification from a topic we're not subscribed to")
+                    _ => {
+                        return err(format!(
+                            "Incorrect number of records in PUBSUB message: {}",
+                            messages.len()
+                        ))
                     }
-                } else if message_type == b"message" {
-                    match subs.confirmed.get(&topic) {
-                        Some(tx) => {
-                            let future = tx.clone().send(msg).map(|_| ()).map_err(|e| e.into());
-                            Box::new(future)
-                        }
-                        None => {
+                },
+                _ => return err("Incorrect message type"),
+            };
+            let mut subs = subs_reader.lock().expect("Lock is tainted");
+            if message_type == b"subscribe" {
+                if let Some((tx, notification_tx)) = subs.pending.remove(&topic) {
+                    subs.confirmed.insert(topic, tx);
+                    match notification_tx.send(()) {
+                        Ok(()) => {
                             let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
                             Box::new(ok)
                         }
+                        Err(()) => err("Cannot send notification of subscription"),
                     }
                 } else {
-                    return err(format!("Unexpected message type: {:?}", message_type));
+                    err("Received subscribe notification that wasn't expected")
                 }
-            });
-            let receiver = Box::new(
-                receiver_raw
-                    .then(|result| match result {
-                        Ok(_) => future::ok(()),
-                        Err(error::Error::EndOfStream) => future::ok(()),
-                        Err(e) => future::err(e),
-                    })
-                    .map(|_| debug!("End of PUBSUB connection, successful"))
-                    .map_err(|e| error!("PUBSUB Receiver error: {}", e)),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
-
-            match executor
-                .execute(sender)
-                .and_then(|_| executor.execute(receiver))
-            {
-                Ok(()) => future::ok(PubsubConnection {
-                    out_tx: out_tx,
-                    subscriptions: subs,
-                }),
-                Err(e) => future::err(error::internal(format!(
-                    "Cannot execute background task: {:?}",
-                    e
-                ))),
+            } else if message_type == b"unsubscribe" {
+                if let Some(_) = subs.confirmed.remove(&topic) {
+                    let result = if subs.confirmed.is_empty() {
+                        future::err(error::Error::EndOfStream)
+                    } else {
+                        future::ok(())
+                    };
+                    Box::new(result)
+                } else {
+                    err("Receieved unsubscription notification from a topic we're not subscribed to")
+                }
+            } else if message_type == b"message" {
+                match subs.confirmed.get(&topic) {
+                    Some(tx) => {
+                        let future = tx.clone().send(msg).map(|_| ()).map_err(|e| e.into());
+                        Box::new(future)
+                    }
+                    None => {
+                        let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
+                        Box::new(ok)
+                    }
+                }
+            } else {
+                return err(format!("Unexpected message type: {:?}", message_type));
             }
         });
+        let receiver = Box::new(
+            receiver_raw
+                .then(|result| match result {
+                    Ok(_) => future::ok(()),
+                    Err(error::Error::EndOfStream) => future::ok(()),
+                    Err(e) => future::err(e),
+                })
+                .map(|_| debug!("End of PUBSUB connection, successful"))
+                .map_err(|e| error!("PUBSUB Receiver error: {}", e)),
+        ) as Box<Future<Item = (), Error = ()> + Send>;
+
+        let _ = tokio::spawn(sender);
+        let _ = tokio::spawn(receiver);
+
+        PubsubConnection {
+            out_tx: out_tx,
+            subscriptions: subs,
+        }
+    });
     Box::new(pubsub_con)
 }
 

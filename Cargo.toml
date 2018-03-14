@@ -16,8 +16,5 @@ commands = []
 bytes = "0.4.5"
 futures = "0.1.18"
 log = "0.4.1"
-tokio = "0.1.0"
-tokio-io = "0.1.5"
-
-[dev-dependencies]
-futures-cpupool = "0.1.8"
+tokio = "0.1.2"
+tokio-io = "0.1.6"

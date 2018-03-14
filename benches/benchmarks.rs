@@ -10,15 +10,11 @@
 
 #![feature(test)]
 
-extern crate test;
-
 extern crate futures;
-extern crate futures_cpupool;
-
-extern crate tokio;
-
 #[macro_use]
 extern crate redis_async;
+extern crate test;
+extern crate tokio;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,40 +22,51 @@ use std::sync::Arc;
 use test::Bencher;
 
 use futures::Future;
+use futures::sync::oneshot;
 
-use futures_cpupool::CpuPool;
+use tokio::runtime::Runtime;
 
 use redis_async::client;
 
-fn open_paired_connection(addr: &SocketAddr, cpu_pool: CpuPool) -> client::PairedConnection {
-    client::paired_connect(addr, cpu_pool)
-        .wait()
-        .expect("No connection")
+fn open_paired_connection(addr: &SocketAddr) -> client::PairedConnection {
+    client::paired_connect(addr).wait().expect("No connection")
+}
+
+fn spawn_and_wait<R, E, F>(runtime: &mut Runtime, f: F) -> Result<R, E>
+where
+    R: Send + 'static,
+    E: Send + 'static,
+    F: Future<Item = R, Error = E> + Send + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    runtime.spawn(f.then(|r| tx.send(r).map_err(|_| panic!("Cannot send result"))));
+    rx.wait().expect("Cannot wait")
 }
 
 #[bench]
 fn bench_simple_getsetdel(b: &mut Bencher) {
-    let cpu_pool = CpuPool::new_num_cpus();
     let addr = "127.0.0.1:6379".parse().unwrap();
 
-    let connection = open_paired_connection(&addr, cpu_pool.clone());
+    let mut runtime = Runtime::new().expect("Runtime");
+
+    let connection = open_paired_connection(&addr);
 
     b.iter(|| {
         faf!(connection.send(resp_array!["SET", "test_key", "42"]));
         let get = connection.send(resp_array!["GET", "test_key"]);
         let del = connection.send(resp_array!["DEL", "test_key"]);
         let get_set = get.join(del);
-        let cpu_f = cpu_pool.spawn(get_set);
-        let _: (String, String) = cpu_f.wait().expect("No result");
+        let _: (String, String) = spawn_and_wait(&mut runtime, get_set).unwrap();
     });
 }
 
 #[bench]
 fn bench_big_pipeline(b: &mut Bencher) {
-    let cpu_pool = CpuPool::new_num_cpus();
     let addr = "127.0.0.1:6379".parse().unwrap();
 
-    let connection = open_paired_connection(&addr, cpu_pool.clone());
+    let mut runtime = Runtime::new().expect("Runtime");
+
+    let connection = open_paired_connection(&addr);
 
     let data_size = 100;
 
@@ -74,16 +81,17 @@ fn bench_big_pipeline(b: &mut Bencher) {
             gets.push(connection.send(resp_array!["GET", test_key]));
         }
         let last_get = gets.remove(data_size - 1);
-        let _: String = cpu_pool.spawn(last_get).wait().unwrap();
+        let _: String = spawn_and_wait(&mut runtime, last_get).unwrap();
     });
 }
 
 #[bench]
 fn bench_complex_pipeline(b: &mut Bencher) {
-    let cpu_pool = CpuPool::new_num_cpus();
     let addr = "127.0.0.1:6379".parse().unwrap();
 
-    let connection_outer = Arc::new(open_paired_connection(&addr, cpu_pool.clone()));
+    let mut runtime = Runtime::new().expect("Runtime");
+
+    let connection_outer = Arc::new(open_paired_connection(&addr));
 
     let data_size = 100;
 
@@ -102,9 +110,7 @@ fn bench_complex_pipeline(b: &mut Bencher) {
             futures::future::join_all(sets)
         };
 
-        let outcome: Vec<String> = cpu_pool.spawn(all_sets).wait().expect("Answers");
+        let outcome: Vec<String> = spawn_and_wait(&mut runtime, all_sets).expect("Answers");
         assert_eq!(outcome.len(), 100);
     });
-
-    println!("{:?}", cpu_pool);
 }
