@@ -21,8 +21,21 @@ use resp;
 
 pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 
-/// Connect to a Redis server and return paired Sink and Stream for reading and writing
-/// asynchronously.
+/// Connect to a Redis server and return a Future that resolves to a
+/// `RespConnection` for reading and writing asynchronously.
+///
+/// Each `RespConnection` implements both `Sink` and `Stream` and read and
+/// writes `RESP` objects.
+///
+/// This is a low-level interface to enable the creation of higher-level
+/// functionality.
+///
+/// The sink and stream sides behave independently of each other, it is the
+/// responsibility of the calling application to determine what results are
+/// paired to a particular command.
+///
+/// But since most Redis usages involve issue commands that result in one
+/// single result, this library also implements `paired_connect`.
 pub fn connect(addr: &SocketAddr) -> Box<Future<Item = RespConnection, Error = io::Error> + Send> {
     Box::new(TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec)))
 }
