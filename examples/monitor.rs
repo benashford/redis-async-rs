@@ -20,28 +20,25 @@ use futures::{future, Future, Sink, Stream};
 use redis_async::client;
 
 fn main() {
-    // let addr = env::args()
-    //     .nth(1)
-    //     .unwrap_or("127.0.0.1:6379".to_string())
-    //     .parse()
-    //     .unwrap();
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or("127.0.0.1:6379".to_string())
+        .parse()
+        .unwrap();
 
-    // let monitor = client::connect(&addr)
-    //     .map_err(|e| e.into())
-    //     .and_then(|connection| {
-    //         let client::ClientConnection { sender, receiver } = connection;
-    //         sender
-    //             .send(resp_array!["MONITOR"])
-    //             .map_err(|e| e.into())
-    //             .and_then(move |_| {
-    //                 receiver.for_each(|incoming| {
-    //                     println!("{:?}", incoming);
-    //                     future::ok(())
-    //                 })
-    //             })
-    //     });
+    let monitor = client::connect(&addr)
+        .map_err(|e| e.into())
+        .and_then(|connection| {
+            connection
+                .send(resp_array!["MONITOR"])
+                .map_err(|e| e.into())
+        })
+        .and_then(|connection| {
+            connection.skip(1).for_each(|incoming| {
+                println!("{:?}", incoming);
+                future::ok(())
+            })
+        });
 
-    // tokio::run(monitor.map_err(|e| println!("ERROR: {:?}", e)));
-
-    unimplemented!("UNIMPLEMENTED")
+    tokio::run(monitor.map_err(|e| println!("ERROR: {:?}", e)));
 }
