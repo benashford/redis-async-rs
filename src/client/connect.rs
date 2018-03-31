@@ -23,6 +23,6 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 
 /// Connect to a Redis server and return paired Sink and Stream for reading and writing
 /// asynchronously.
-pub fn connect(addr: &SocketAddr) -> Box<Future<Item = RespConnection, Error = io::Error>> {
+pub fn connect(addr: &SocketAddr) -> Box<Future<Item = RespConnection, Error = io::Error> + Send> {
     Box::new(TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec)))
 }

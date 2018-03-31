@@ -53,27 +53,21 @@ mod test {
 
     #[test]
     fn can_connect() {
-        // TODO - re-enable
-        //
-        // let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-        // let connection = super::connect(&addr)
-        //     .map_err(|e| e.into())
-        //     .and_then(|connection| {
-        //         let a = connection
-        //             .sender
-        //             .send(resp_array!["PING", "TEST"])
-        //             .map_err(|e| e.into());
-        //         let b = connection.receiver.take(1).collect();
-        //         a.join(b).and_then(|(sender, values)| {
-        //             close_sender(sender).map_err(|e| e.into()).map(|()| values)
-        //         })
-        //     });
+        let connection = super::connect(&addr)
+            .map_err(|e| e.into())
+            .and_then(|connection| {
+                connection
+                    .send(resp_array!["PING", "TEST"])
+                    .map_err(|e| e.into())
+            })
+            .and_then(|connection| connection.take(1).collect());
 
-        // let values = run_and_wait(connection).unwrap();
+        let values = run_and_wait(connection).unwrap();
 
-        // assert_eq!(values.len(), 1);
-        // assert_eq!(values[0], "TEST".into());
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], "TEST".into());
     }
 
     #[test]
