@@ -9,94 +9,201 @@
  */
 
 use std::collections::VecDeque;
+use std::mem;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use futures::{future, Future, Sink, Stream, sync::{mpsc, oneshot}};
+use futures::{future, Async, AsyncSink, Future, Poll, Sink, Stream, sync::{mpsc, oneshot}};
+
+use tokio_executor::{DefaultExecutor, Executor};
 
 use error;
 use resp;
-use super::connect::connect;
+use super::connect::{connect, RespConnection};
 
 type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
+
+enum SendStatus {
+    Ok,
+    End,
+    Full(resp::RespValue, bool),
+}
+
+impl SendStatus {
+    fn full(msg: resp::RespValue) -> Self {
+        SendStatus::Full(msg, false)
+    }
+}
+
+enum FlushStatus {
+    Ok,
+    Required,
+}
+
+enum ReceiveStatus {
+    ReadyFinished,
+    ReadyMore,
+    NotReady,
+}
+
+struct PairedConnectionInner {
+    connection: RespConnection,
+    out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+    waiting: VecDeque<oneshot::Sender<resp::RespValue>>,
+
+    send_status: SendStatus,
+    flush_status: FlushStatus,
+}
+
+impl PairedConnectionInner {
+    fn new(
+        con: RespConnection,
+        out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+    ) -> Self {
+        PairedConnectionInner {
+            connection: con,
+            out_rx: out_rx,
+            waiting: VecDeque::new(),
+            send_status: SendStatus::Ok,
+            flush_status: FlushStatus::Ok,
+        }
+    }
+
+    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
+        match self.connection
+            .start_send(msg)
+            .map_err(|e| error!("Error sending message to connection: {}", e))?
+        {
+            AsyncSink::Ready => {
+                self.send_status = SendStatus::Ok;
+                self.flush_status = FlushStatus::Required;
+                Ok(true)
+            }
+            AsyncSink::NotReady(msg) => {
+                self.send_status = SendStatus::full(msg);
+                self.flush_status = FlushStatus::Required;
+                Ok(false)
+            }
+        }
+    }
+
+    fn poll_start_send(&mut self) -> Result<bool, ()> {
+        let message = match self.send_status {
+            SendStatus::End | SendStatus::Full(_, false) => return Ok(false),
+            SendStatus::Full(ref mut msg_rf, true) => unsafe {
+                mem::replace(msg_rf, mem::uninitialized())
+            },
+            SendStatus::Ok => match self.out_rx
+                .poll()
+                .map_err(|_| error!("Error polling for messages to send"))?
+            {
+                Async::Ready(Some((msg, tx))) => {
+                    self.waiting.push_back(tx);
+                    msg
+                }
+                Async::Ready(None) => {
+                    self.send_status = SendStatus::End;
+                    return Ok(false);
+                }
+                Async::NotReady => return Ok(false),
+            },
+        };
+
+        self.impl_start_send(message)
+    }
+
+    fn poll_complete(&mut self) -> Result<(), ()> {
+        match self.flush_status {
+            FlushStatus::Ok => (),
+            FlushStatus::Required => {
+                match self.connection
+                    .poll_complete()
+                    .map_err(|e| error!("Error polling for completeness: {}", e))?
+                {
+                    Async::Ready(()) => self.flush_status = FlushStatus::Ok,
+                    Async::NotReady => (),
+                }
+                if let SendStatus::Full(_, ref mut post) = self.send_status {
+                    if *post == false {
+                        *post = true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self) -> Result<ReceiveStatus, ()> {
+        match self.connection
+            .poll()
+            .map_err(|e| error!("Error polling to receive messages: {}", e))?
+        {
+            Async::Ready(None) => Ok(ReceiveStatus::ReadyFinished),
+            Async::Ready(Some(msg)) => {
+                let tx = self.waiting
+                    .pop_front()
+                    .expect(&format!("Received unexpected message: {:?}", msg));
+                let _ = tx.send(msg);
+                if let SendStatus::End = self.send_status {
+                    if self.waiting.is_empty() {
+                        return Ok(ReceiveStatus::ReadyFinished);
+                    }
+                }
+                Ok(ReceiveStatus::ReadyMore)
+            }
+            Async::NotReady => Ok(ReceiveStatus::NotReady),
+        }
+    }
+}
+
+impl Future for PairedConnectionInner {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        // If there's something to send, send it...
+        let mut sending = true;
+        while sending {
+            sending = self.poll_start_send()?;
+        }
+
+        self.poll_complete()?;
+
+        // If there's something to receive, receive it...
+        let mut receiving = true;
+        while receiving {
+            receiving = match self.receive()? {
+                ReceiveStatus::NotReady => false,
+                ReceiveStatus::ReadyMore => true,
+                ReceiveStatus::ReadyFinished => return Ok(Async::Ready(())),
+            }
+        }
+
+        Ok(Async::NotReady)
+    }
+}
+
+/// A shareable and cheaply cloneable connection to which Redis commands can be sent
+#[derive(Clone)]
+pub struct PairedConnection {
+    out_tx: mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+}
 
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
-    // let paired_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
-    //     let ClientConnection { sender, receiver } = connection;
-    //     let (out_tx, out_rx) = mpsc::unbounded();
-    //     let running = Arc::new(Mutex::new(true));
-    //     let sender_running = running.clone();
-    //     let sender = Box::new(
-    //         sender
-    //             .sink_map_err(|e| error!("Sender error: {}", e))
-    //             .send_all(out_rx)
-    //             .then(move |r| {
-    //                 let mut lock = sender_running.lock().expect("Lock is tainted");
-    //                 *lock = false;
-    //                 match r {
-    //                     Ok((sender, _)) => {
-    //                         info!("Sender stream closing...");
-    //                         Box::new(
-    //                             close_sender(sender).map_err(|()| error!("Error closing stream")),
-    //                         )
-    //                             as Box<Future<Item = (), Error = ()> + Send>
-    //                     }
-    //                     Err(e) => {
-    //                         error!("Error occurred: {:?}", e);
-    //                         Box::new(future::err(()))
-    //                     }
-    //                 }
-    //             }),
-    //     ) as Box<Future<Item = (), Error = ()> + Send>;
+    let pc_f = connect(addr).map_err(|e| e.into()).map(|connection| {
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
+        let mut executor = DefaultExecutor::current();
+        executor
+            .spawn(paired_connection_inner)
+            .expect("Cannot spawn paired connection");
+        PairedConnection { out_tx }
+    });
 
-    //     let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
-    //         Arc::new(Mutex::new(VecDeque::new()));
-    //     let receiver_queue = resp_queue.clone();
-    //     let receiver = Box::new(
-    //         receiver
-    //             .for_each(move |msg| {
-    //                 let mut queue = receiver_queue.lock().expect("Lock is tainted");
-    //                 let dest = queue.pop_front().expect("Queue is empty");
-    //                 let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
-    //                 if queue.is_empty() {
-    //                     let running = running.lock().expect("Lock is tainted");
-    //                     if *running {
-    //                         Ok(())
-    //                     } else {
-    //                         Err(error::Error::EndOfStream)
-    //                     }
-    //                 } else {
-    //                     Ok(())
-    //                 }
-    //             })
-    //             .then(|result| match result {
-    //                 Ok(()) => future::ok(()),
-    //                 Err(error::Error::EndOfStream) => future::ok(()),
-    //                 Err(e) => future::err(e),
-    //             })
-    //             .map(|_| debug!("Closing the receiver stream, receiver closed"))
-    //             .map_err(|e| error!("Error receiving message: {}", e)),
-    //     ) as Box<Future<Item = (), Error = ()> + Send>;
-
-    //     let _ = tokio::spawn(sender);
-    //     let _ = tokio::spawn(receiver);
-
-    //     PairedConnection {
-    //         out_tx: out_tx,
-    //         resp_queue: resp_queue,
-    //     }
-    // });
-    // Box::new(paired_con)
-
-    unimplemented!()
-}
-
-pub struct PairedConnection {
-    out_tx: mpsc::UnboundedSender<resp::RespValue>,
-    resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
+    Box::new(pc_f)
 }
 
 pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
@@ -137,11 +244,9 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        let mut queue = self.resp_queue.lock().expect("Tainted queue");
-
-        queue.push_back(tx);
-
-        self.out_tx.unbounded_send(msg).expect("Failed to send");
+        self.out_tx
+            .unbounded_send((msg, tx))
+            .expect("Cannot send message!");
 
         let future = rx.then(|v| match v {
             Ok(v) => future::result(T::from_resp(v)),

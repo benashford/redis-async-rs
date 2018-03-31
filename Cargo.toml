@@ -12,6 +12,7 @@ keywords = ["redis", "tokio"]
 bytes = "0.4.5"
 futures = "0.1.18"
 log = "0.4.1"
+tokio-executor = "0.1"
 tokio-tcp = "0.1"
 tokio-io = "0.1.6"
 

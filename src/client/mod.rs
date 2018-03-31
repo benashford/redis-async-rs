@@ -105,17 +105,17 @@ mod test {
 
     #[test]
     fn can_paired_connect() {
-        // let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-        // let connect_f = super::paired_connect(&addr).and_then(|connection| {
-        //     let res_f = connection.send(resp_array!["PING", "TEST"]);
-        //     faf!(connection.send(resp_array!["SET", "X", "123"]));
-        //     let wait_f = connection.send(resp_array!["GET", "X"]);
-        //     res_f.join(wait_f)
-        // });
-        // let (result_1, result_2): (String, String) = run_and_wait(connect_f).unwrap();
-        // assert_eq!(result_1, "TEST");
-        // assert_eq!(result_2, "123");
+        let connect_f = super::paired_connect(&addr).and_then(|connection| {
+            let res_f = connection.send(resp_array!["PING", "TEST"]);
+            faf!(connection.send(resp_array!["SET", "X", "123"]));
+            let wait_f = connection.send(resp_array!["GET", "X"]);
+            res_f.join(wait_f)
+        });
+        let (result_1, result_2): (String, String) = run_and_wait(connect_f).unwrap();
+        assert_eq!(result_1, "TEST");
+        assert_eq!(result_2, "123");
     }
 
     #[test]
