@@ -12,14 +12,11 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use futures::{future, Future, Sink, Stream};
-use futures::sync::{mpsc, oneshot};
-
-use tokio;
+use futures::{future, Future, Sink, Stream, sync::{mpsc, oneshot}};
 
 use error;
 use resp;
-use super::connect::{close_sender, connect, ClientConnection};
+use super::connect::connect;
 
 type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
 
@@ -27,72 +24,74 @@ type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Er
 ///
 /// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
-    let paired_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
-        let ClientConnection { sender, receiver } = connection;
-        let (out_tx, out_rx) = mpsc::unbounded();
-        let running = Arc::new(Mutex::new(true));
-        let sender_running = running.clone();
-        let sender = Box::new(
-            sender
-                .sink_map_err(|e| error!("Sender error: {}", e))
-                .send_all(out_rx)
-                .then(move |r| {
-                    let mut lock = sender_running.lock().expect("Lock is tainted");
-                    *lock = false;
-                    match r {
-                        Ok((sender, _)) => {
-                            info!("Sender stream closing...");
-                            Box::new(
-                                close_sender(sender).map_err(|()| error!("Error closing stream")),
-                            )
-                                as Box<Future<Item = (), Error = ()> + Send>
-                        }
-                        Err(e) => {
-                            error!("Error occurred: {:?}", e);
-                            Box::new(future::err(()))
-                        }
-                    }
-                }),
-        ) as Box<Future<Item = (), Error = ()> + Send>;
+    // let paired_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
+    //     let ClientConnection { sender, receiver } = connection;
+    //     let (out_tx, out_rx) = mpsc::unbounded();
+    //     let running = Arc::new(Mutex::new(true));
+    //     let sender_running = running.clone();
+    //     let sender = Box::new(
+    //         sender
+    //             .sink_map_err(|e| error!("Sender error: {}", e))
+    //             .send_all(out_rx)
+    //             .then(move |r| {
+    //                 let mut lock = sender_running.lock().expect("Lock is tainted");
+    //                 *lock = false;
+    //                 match r {
+    //                     Ok((sender, _)) => {
+    //                         info!("Sender stream closing...");
+    //                         Box::new(
+    //                             close_sender(sender).map_err(|()| error!("Error closing stream")),
+    //                         )
+    //                             as Box<Future<Item = (), Error = ()> + Send>
+    //                     }
+    //                     Err(e) => {
+    //                         error!("Error occurred: {:?}", e);
+    //                         Box::new(future::err(()))
+    //                     }
+    //                 }
+    //             }),
+    //     ) as Box<Future<Item = (), Error = ()> + Send>;
 
-        let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
-        let receiver_queue = resp_queue.clone();
-        let receiver = Box::new(
-            receiver
-                .for_each(move |msg| {
-                    let mut queue = receiver_queue.lock().expect("Lock is tainted");
-                    let dest = queue.pop_front().expect("Queue is empty");
-                    let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
-                    if queue.is_empty() {
-                        let running = running.lock().expect("Lock is tainted");
-                        if *running {
-                            Ok(())
-                        } else {
-                            Err(error::Error::EndOfStream)
-                        }
-                    } else {
-                        Ok(())
-                    }
-                })
-                .then(|result| match result {
-                    Ok(()) => future::ok(()),
-                    Err(error::Error::EndOfStream) => future::ok(()),
-                    Err(e) => future::err(e),
-                })
-                .map(|_| debug!("Closing the receiver stream, receiver closed"))
-                .map_err(|e| error!("Error receiving message: {}", e)),
-        ) as Box<Future<Item = (), Error = ()> + Send>;
+    //     let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
+    //         Arc::new(Mutex::new(VecDeque::new()));
+    //     let receiver_queue = resp_queue.clone();
+    //     let receiver = Box::new(
+    //         receiver
+    //             .for_each(move |msg| {
+    //                 let mut queue = receiver_queue.lock().expect("Lock is tainted");
+    //                 let dest = queue.pop_front().expect("Queue is empty");
+    //                 let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
+    //                 if queue.is_empty() {
+    //                     let running = running.lock().expect("Lock is tainted");
+    //                     if *running {
+    //                         Ok(())
+    //                     } else {
+    //                         Err(error::Error::EndOfStream)
+    //                     }
+    //                 } else {
+    //                     Ok(())
+    //                 }
+    //             })
+    //             .then(|result| match result {
+    //                 Ok(()) => future::ok(()),
+    //                 Err(error::Error::EndOfStream) => future::ok(()),
+    //                 Err(e) => future::err(e),
+    //             })
+    //             .map(|_| debug!("Closing the receiver stream, receiver closed"))
+    //             .map_err(|e| error!("Error receiving message: {}", e)),
+    //     ) as Box<Future<Item = (), Error = ()> + Send>;
 
-        let _ = tokio::spawn(sender);
-        let _ = tokio::spawn(receiver);
+    //     let _ = tokio::spawn(sender);
+    //     let _ = tokio::spawn(receiver);
 
-        PairedConnection {
-            out_tx: out_tx,
-            resp_queue: resp_queue,
-        }
-    });
-    Box::new(paired_con)
+    //     PairedConnection {
+    //         out_tx: out_tx,
+    //         resp_queue: resp_queue,
+    //     }
+    // });
+    // Box::new(paired_con)
+
+    unimplemented!()
 }
 
 pub struct PairedConnection {
@@ -107,13 +106,11 @@ pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
 ///
 #[macro_export]
 macro_rules! faf {
-    ($e:expr) => (
-        {
-            use $crate::client::paired::SendBox;
-            use $crate::resp;
-            let _:SendBox<resp::RespValue> = $e;
-        }
-    )
+    ($e: expr) => {{
+        use $crate::client::paired::SendBox;
+        use $crate::resp;
+        let _: SendBox<resp::RespValue> = $e;
+    }};
 }
 
 impl PairedConnection {
@@ -198,7 +195,7 @@ mod commands {
     }
 
     macro_rules! command_collection_ary {
-        ($c:expr) => {
+        ($c: expr) => {
             impl<T: ToRespString + Into<RespValue>> CommandCollection for [T; $c] {
                 fn add_to_cmd(mut self, cmd: &mut Vec<RespValue>) {
                     for idx in 0..$c {
@@ -207,7 +204,7 @@ mod commands {
                     }
                 }
             }
-        }
+        };
     }
 
     command_collection_ary!(1);
