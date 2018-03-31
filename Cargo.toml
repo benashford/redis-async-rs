@@ -8,10 +8,6 @@ description = "An asynchronous futures based Redis client for Rust using Tokio"
 repository = "https://github.com/benashford/redis-async-rs"
 keywords = ["redis", "tokio"]
 
-[features]
-default = []
-commands = []
-
 [dependencies]
 bytes = "0.4.5"
 futures = "0.1.18"
