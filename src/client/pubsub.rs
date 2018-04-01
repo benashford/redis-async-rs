@@ -8,16 +8,18 @@
  * except according to those terms.
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
-use futures::{future, Future, Poll, Sink, Stream, sync::{mpsc, oneshot}};
+use futures::{future, Async, AsyncSink, Future, Poll, Sink, Stream, stream::Fuse,
+              sync::{mpsc, oneshot}};
+
+use tokio_executor::{DefaultExecutor, Executor};
 
 use error;
 use resp;
 use resp::FromResp;
-use super::connect::connect;
+use super::connect::{connect, RespConnection};
 
 fn err<S>(msg: S) -> Box<Future<Item = (), Error = error::Error> + Send>
 where
@@ -26,127 +28,188 @@ where
     Box::new(future::err(error::internal(msg)))
 }
 
+enum PubsubEvent {
+    Subscribe(String, PubsubSink),
+    Unsubscribe(String),
+}
+
+pub type PubsubStreamInner = mpsc::UnboundedReceiver<resp::RespValue>;
+pub type PubsubSink = mpsc::UnboundedSender<resp::RespValue>;
+
+struct PubsubConnectionInner {
+    connection: RespConnection,
+    out_rx: Fuse<mpsc::UnboundedReceiver<PubsubEvent>>,
+    subscriptions: HashMap<String, PubsubSink>,
+    send_pending: Option<resp::RespValue>,
+}
+
+impl PubsubConnectionInner {
+    fn new(con: RespConnection, out_rx: mpsc::UnboundedReceiver<PubsubEvent>) -> Self {
+        PubsubConnectionInner {
+            connection: con,
+            out_rx: out_rx.fuse(),
+            subscriptions: HashMap::new(),
+            send_pending: None,
+        }
+    }
+
+    /// Returns true = OK, more can be sent, or false = sink is full, needs flushing
+    fn do_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
+        match self.connection
+            .start_send(msg)
+            .map_err(|e| error!("Cannot send subscription request to Redis: {}", e))?
+        {
+            AsyncSink::Ready => Ok(true),
+            AsyncSink::NotReady(msg) => {
+                self.send_pending = Some(msg);
+                Ok(false)
+            }
+        }
+    }
+
+    fn do_flush(&mut self) -> Result<(), ()> {
+        self.connection
+            .poll_complete()
+            .map(|_| ())
+            .map_err(|e| error!("Error polling for completeness: {}", e))
+    }
+
+    // Returns true = flushing required.  false = no flushing required
+    fn handle_new_subs(&mut self) -> Result<bool, ()> {
+        if let Some(msg) = self.send_pending.take() {
+            if !self.do_send(msg)? {
+                return Ok(true);
+            }
+        }
+        loop {
+            match self.out_rx
+                .poll()
+                .map_err(|_| error!("Cannot poll for new subscriptions"))?
+            {
+                Async::Ready(None) => return Ok(false),
+                Async::Ready(Some(pubsub_event)) => {
+                    let message = match pubsub_event {
+                        PubsubEvent::Subscribe(topic, sender) => {
+                            self.subscriptions.insert(topic.clone(), sender);
+                            resp_array!["SUBSCRIBE", topic]
+                        }
+                        PubsubEvent::Unsubscribe(topic) => resp_array!["UNSUBSCRIBE", topic],
+                    };
+                    if !self.do_send(message)? {
+                        return Ok(true);
+                    }
+                }
+                Async::NotReady => return Ok(false),
+            }
+        }
+    }
+
+    fn handle_message(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
+        let (message_type, topic, msg) = match msg {
+            resp::RespValue::Array(mut messages) => match (
+                messages.pop(),
+                messages.pop(),
+                messages.pop(),
+                messages.pop(),
+            ) {
+                (Some(msg), Some(topic), Some(message_type), None) => {
+                    match (msg, String::from_resp(topic), message_type) {
+                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
+                        _ => {
+                            error!("Incorrect format of PUBSUB message");
+                            return Err(());
+                        }
+                    }
+                }
+                _ => {
+                    error!("Wrong number of parts for a PUBSUB message");
+                    return Err(());
+                }
+            },
+            _ => {
+                error!("PUBSUB message should be encoded as an array");
+                return Err(());
+            }
+        };
+
+        if message_type == b"subscribe" {
+            debug!("Subscription confirmed for: {}", topic);
+        } else if message_type == b"unsubscribe" {
+            if let Entry::Occupied(entry) = self.subscriptions.entry(topic) {
+                entry.remove_entry();
+            }
+            if self.subscriptions.is_empty() {
+                return Ok(false);
+            }
+        } else if message_type == b"message" {
+            if let Some(sender) = self.subscriptions.get(&topic) {
+                sender.unbounded_send(msg).expect("Cannot send message");
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
+    fn handle_messages(&mut self) -> Result<bool, ()> {
+        loop {
+            match self.connection
+                .poll()
+                .map_err(|e| error!("Polling error for messages: {}", e))?
+            {
+                Async::Ready(None) => return Ok(false),
+                Async::Ready(Some(message)) => {
+                    let message_result = self.handle_message(message)?;
+                    if !message_result {
+                        return Ok(false);
+                    }
+                }
+                Async::NotReady => return Ok(true),
+            }
+        }
+    }
+}
+
+impl Future for PubsubConnectionInner {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let flush_req = self.handle_new_subs()?;
+        if flush_req {
+            self.do_flush()?;
+        }
+        let cont = self.handle_messages()?;
+        if cont {
+            Ok(Async::NotReady)
+        } else {
+            Ok(Async::Ready(()))
+        }
+    }
+}
+
+/// A shareable reference to subscribe to PUBSUB topics
+#[derive(Clone)]
+pub struct PubsubConnection {
+    out_tx: mpsc::UnboundedSender<PubsubEvent>,
+}
+
 /// Used for Redis's PUBSUB functionality.
 ///
 /// Returns a future that resolves to a `PubsubConnection`.
 pub fn pubsub_connect(
     addr: &SocketAddr,
 ) -> Box<Future<Item = PubsubConnection, Error = error::Error> + Send> {
-    // let pubsub_con = connect(addr).map_err(|e| e.into()).map(move |connection| {
-    //     let ClientConnection { sender, receiver } = connection;
-    //     let (out_tx, out_rx) = mpsc::unbounded();
-
-    //     let sender = Box::new(
-    //         sender
-    //             .sink_map_err(|e| error!("Sending socket error: {}", e))
-    //             .send_all(out_rx.map_err(|()| error!("Outgoing message channel error")))
-    //             .map(|_| debug!("Send all completed successfully")),
-    //     ) as Box<Future<Item = (), Error = ()> + Send>;
-
-    //     let subs = Arc::new(Mutex::new(PubsubSubscriptions {
-    //         pending: HashMap::new(),
-    //         confirmed: HashMap::new(),
-    //     }));
-    //     let subs_reader = subs.clone();
-
-    //     let receiver_raw = receiver.for_each(move |msg| {
-    //         let (message_type, topic, msg) = match msg {
-    //             resp::RespValue::Array(mut messages) => match (
-    //                 messages.pop(),
-    //                 messages.pop(),
-    //                 messages.pop(),
-    //                 messages.pop(),
-    //             ) {
-    //                 (Some(msg), Some(topic), Some(message_type), None) => {
-    //                     match (msg, String::from_resp(topic), message_type) {
-    //                         (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => {
-    //                             (bytes, topic, msg)
-    //                         }
-    //                         _ => return err("RESP Message structure invalid"),
-    //                     }
-    //                 }
-    //                 _ => {
-    //                     return err(format!(
-    //                         "Incorrect number of records in PUBSUB message: {}",
-    //                         messages.len()
-    //                     ))
-    //                 }
-    //             },
-    //             _ => return err("Incorrect message type"),
-    //         };
-    //         let mut subs = subs_reader.lock().expect("Lock is tainted");
-    //         if message_type == b"subscribe" {
-    //             if let Some((tx, notification_tx)) = subs.pending.remove(&topic) {
-    //                 subs.confirmed.insert(topic, tx);
-    //                 match notification_tx.send(()) {
-    //                     Ok(()) => {
-    //                         let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-    //                         Box::new(ok)
-    //                     }
-    //                     Err(()) => err("Cannot send notification of subscription"),
-    //                 }
-    //             } else {
-    //                 err("Received subscribe notification that wasn't expected")
-    //             }
-    //         } else if message_type == b"unsubscribe" {
-    //             if let Some(_) = subs.confirmed.remove(&topic) {
-    //                 let result = if subs.confirmed.is_empty() {
-    //                     future::err(error::Error::EndOfStream)
-    //                 } else {
-    //                     future::ok(())
-    //                 };
-    //                 Box::new(result)
-    //             } else {
-    //                 err("Receieved unsubscription notification from a topic we're not subscribed to")
-    //             }
-    //         } else if message_type == b"message" {
-    //             match subs.confirmed.get(&topic) {
-    //                 Some(tx) => {
-    //                     let future = tx.clone().send(msg).map(|_| ()).map_err(|e| e.into());
-    //                     Box::new(future)
-    //                 }
-    //                 None => {
-    //                     let ok = future::ok(()).map_err(|_: ()| error::internal("unreachable"));
-    //                     Box::new(ok)
-    //                 }
-    //             }
-    //         } else {
-    //             return err(format!("Unexpected message type: {:?}", message_type));
-    //         }
-    //     });
-    //     let receiver = Box::new(
-    //         receiver_raw
-    //             .then(|result| match result {
-    //                 Ok(_) => future::ok(()),
-    //                 Err(error::Error::EndOfStream) => future::ok(()),
-    //                 Err(e) => future::err(e),
-    //             })
-    //             .map(|_| debug!("End of PUBSUB connection, successful"))
-    //             .map_err(|e| error!("PUBSUB Receiver error: {}", e)),
-    //     ) as Box<Future<Item = (), Error = ()> + Send>;
-
-    //     let _ = tokio::spawn(sender);
-    //     let _ = tokio::spawn(receiver);
-
-    //     PubsubConnection {
-    //         out_tx: out_tx,
-    //         subscriptions: subs,
-    //     }
-    // });
-    // Box::new(pubsub_con)
-
-    unimplemented!()
-}
-
-struct PubsubSubscriptions {
-    pending: HashMap<String, (mpsc::Sender<resp::RespValue>, oneshot::Sender<()>)>,
-    confirmed: HashMap<String, mpsc::Sender<resp::RespValue>>,
-}
-
-#[derive(Clone)]
-pub struct PubsubConnection {
-    out_tx: mpsc::UnboundedSender<resp::RespValue>,
-    subscriptions: Arc<Mutex<PubsubSubscriptions>>,
+    let pc_f = connect(addr).map_err(|e| e.into()).map(|connection| {
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let pubsub_connection_inner = Box::new(PubsubConnectionInner::new(connection, out_rx));
+        let mut default_executor = DefaultExecutor::current();
+        default_executor
+            .spawn(pubsub_connection_inner)
+            .expect("Cannot spawn pubsub connection");
+        PubsubConnection { out_tx }
+    });
+    Box::new(pc_f)
 }
 
 impl PubsubConnection {
@@ -154,53 +217,31 @@ impl PubsubConnection {
     ///
     /// Returns a future that resolves to a `Stream` that contains all the messages published on
     /// that particular topic.
-    pub fn subscribe<T: Into<String>>(
-        &self,
-        topic: T,
-    ) -> Box<Future<Item = PubsubStream, Error = error::Error> + Send> {
+    pub fn subscribe<T: Into<String>>(&self, topic: T) -> PubsubStream {
         let topic = topic.into();
-        let mut subs = self.subscriptions.lock().expect("Lock is tainted");
+        let (tx, rx) = mpsc::unbounded();
+        self.out_tx
+            .unbounded_send(PubsubEvent::Subscribe(topic.clone(), tx))
+            .expect("Cannot queue subscription request");
 
-        // TODO - check arbitrary buffer size
-        let (tx, rx) = mpsc::channel(10);
-        if subs.confirmed.contains_key(&topic) || subs.pending.contains_key(&topic) {
-            return Box::new(future::err(error::internal("Already subscribed")));
+        PubsubStream {
+            topic: topic,
+            underlying: rx,
+            con: self.clone(),
         }
+    }
 
-        let (notification_tx, notification_rx) = oneshot::channel();
-        let subscribe_msg = resp_array!["SUBSCRIBE", &topic];
-        subs.pending.insert(topic.clone(), (tx, notification_tx));
-        let new_out_tx = self.out_tx.clone();
-        match self.out_tx.unbounded_send(subscribe_msg) {
-            Ok(_) => {
-                let done = notification_rx
-                    .map(|_| PubsubStream::new(topic, rx, new_out_tx))
-                    .map_err(|e| e.into());
-                Box::new(done)
-            }
-            Err(e) => Box::new(future::err(e.into())),
-        }
+    pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
+        self.out_tx
+            .unbounded_send(PubsubEvent::Unsubscribe(topic.into()))
+            .expect("Cannot queue unsubscription request");
     }
 }
 
 pub struct PubsubStream {
     topic: String,
-    underlying: mpsc::Receiver<resp::RespValue>,
-    out_tx: mpsc::UnboundedSender<resp::RespValue>,
-}
-
-impl PubsubStream {
-    fn new(
-        topic: String,
-        stream: mpsc::Receiver<resp::RespValue>,
-        out_tx: mpsc::UnboundedSender<resp::RespValue>,
-    ) -> Self {
-        PubsubStream {
-            topic: topic,
-            underlying: stream,
-            out_tx: out_tx,
-        }
-    }
+    underlying: PubsubStreamInner,
+    con: PubsubConnection,
 }
 
 impl Stream for PubsubStream {
@@ -214,15 +255,6 @@ impl Stream for PubsubStream {
 
 impl Drop for PubsubStream {
     fn drop(&mut self) {
-        let send_f = self.out_tx
-            .clone()
-            .send(resp_array!["UNSUBSCRIBE", &self.topic]);
-        match send_f.wait() {
-            Ok(_) => debug!("Send unsubscribe command for topic: {}", self.topic),
-            Err(e) => error!(
-                "Failed to send unsubscribe command for topic: {}, error: {}",
-                self.topic, e
-            ),
-        }
+        self.con.unsubscribe(self.topic.as_ref());
     }
 }
