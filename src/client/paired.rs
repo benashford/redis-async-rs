@@ -11,7 +11,6 @@
 use std::collections::VecDeque;
 use std::mem;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
 use futures::{future, Async, AsyncSink, Future, Poll, Sink, Stream, sync::{mpsc, oneshot}};
 

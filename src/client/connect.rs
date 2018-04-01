@@ -11,7 +11,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use futures::{Future, Stream};
+use futures::Future;
 
 use tokio_tcp::TcpStream;
 

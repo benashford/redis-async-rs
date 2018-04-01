@@ -147,27 +147,27 @@ mod test {
 
     #[test]
     fn pubsub_test() {
-        // let addr = "127.0.0.1:6379".parse().unwrap();
-        // let paired_c = super::paired_connect(&addr);
-        // let pubsub_c = super::pubsub_connect(&addr);
-        // let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
-        //     let subscribe = pubsub.subscribe("test-topic");
-        //     subscribe.and_then(move |msgs| {
-        //         faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
-        //         faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
-        //         paired
-        //             .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
-        //             .map(|_: resp::RespValue| msgs)
-        //     })
-        // });
-        // let tst = msgs.and_then(|msgs| {
-        //     msgs.take(2)
-        //         .collect()
-        //         .map_err(|_| error::internal("unreachable"))
-        // });
-        // let result = run_and_wait(tst).unwrap();
-        // assert_eq!(result.len(), 2);
-        // assert_eq!(result[0], "test-message".into());
-        // assert_eq!(result[1], "test-message2".into());
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = super::paired_connect(&addr);
+        let pubsub_c = super::pubsub_connect(&addr);
+        let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
+            let subscribe = pubsub.subscribe("test-topic");
+            subscribe.and_then(move |msgs| {
+                faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
+                faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
+                paired
+                    .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
+                    .map(|_: resp::RespValue| msgs)
+            })
+        });
+        let tst = msgs.and_then(|msgs| {
+            msgs.take(2)
+                .collect()
+                .map_err(|_| error::internal("unreachable"))
+        });
+        let result = run_and_wait(tst).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "test-message".into());
+        assert_eq!(result[1], "test-message2".into());
     }
 }
