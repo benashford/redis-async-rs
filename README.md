@@ -104,8 +104,8 @@ In most cases the difference is small.
 
 | Benchmark        | redis-rs (the control)                                            | redis-async-rs  |
 | ---------------- | ----------------------------------------------------------------- | --------------- |
-| simple_getsetdel | 132,856 ns/iter (not pipelined)<br>54,967 ns/iter (pipelined)     | 104,023 ns/iter |
-| complex          | 10,588,664 ns/iter (non pipelined)<br>695,551 ns/iter (pipelined) | 848,265 ns/iter |
+| simple_getsetdel | 139,293 ns/iter (not pipelined)<br>54,216 ns/iter (pipelined)     | 136,435 ns/iter |
+| complex          | 9,909,434 ns/iter (non pipelined)<br>539,767 ns/iter (pipelined)  | 718,678 ns/iter |
 
 For `redis-rs` each benchmark has a pipelined and a non-pipelined version.  For `redis-async-rs` there is only one version as pipelining is handled implicitely.
 
