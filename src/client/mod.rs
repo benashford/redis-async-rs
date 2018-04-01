@@ -82,12 +82,12 @@ mod test {
                     (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
                 );
                 ops.push(resp_array!["SMEMBERS", "test_set"]);
-                let send_f = connection
+                connection
                     .send_all(stream::iter_ok::<_, io::Error>(ops))
                     .map(|(sender, _)| sender)
-                    .map_err(|e| e.into());
-                send_f.and_then(|connection| connection.skip(1001).take(1).collect())
-            });
+                    .map_err(|e| e.into())
+            })
+            .and_then(|connection| connection.skip(1001).take(1).collect());
         let values = run_and_wait(connection).unwrap();
         assert_eq!(values.len(), 1);
         let values = match &values[0] {
