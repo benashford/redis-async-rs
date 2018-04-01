@@ -72,35 +72,29 @@ mod test {
 
     #[test]
     fn complex_test() {
-        // TODO - unimplemented
-        //
-        // let addr = "127.0.0.1:6379".parse().unwrap();
-        // let connection = super::connect(&addr)
-        //     .map_err(|e| e.into())
-        //     .and_then(|connection| {
-        //         let mut ops = Vec::<resp::RespValue>::new();
-        //         ops.push(resp_array!["FLUSH"]);
-        //         ops.extend(
-        //             (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
-        //         );
-        //         ops.push(resp_array!["SMEMBERS", "test_set"]);
-        //         let send = connection
-        //             .sender
-        //             .send_all(stream::iter_ok::<_, io::Error>(ops))
-        //             .map(|(sender, _)| sender)
-        //             .map_err(|e| e.into());
-        //         let receive = connection.receiver.skip(1001).take(1).collect();
-        //         send.join(receive).and_then(|(sender, values)| {
-        //             close_sender(sender).map_err(|e| e.into()).map(|()| values)
-        //         })
-        //     });
-        // let values = run_and_wait(connection).unwrap();
-        // assert_eq!(values.len(), 1);
-        // let values = match &values[0] {
-        //     &resp::RespValue::Array(ref values) => values.clone(),
-        //     _ => panic!("Not an array"),
-        // };
-        // assert_eq!(values.len(), 1000);
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let connection = super::connect(&addr)
+            .map_err(|e| e.into())
+            .and_then(|connection| {
+                let mut ops = Vec::<resp::RespValue>::new();
+                ops.push(resp_array!["FLUSH"]);
+                ops.extend(
+                    (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
+                );
+                ops.push(resp_array!["SMEMBERS", "test_set"]);
+                let send_f = connection
+                    .send_all(stream::iter_ok::<_, io::Error>(ops))
+                    .map(|(sender, _)| sender)
+                    .map_err(|e| e.into());
+                send_f.and_then(|connection| connection.skip(1001).take(1).collect())
+            });
+        let values = run_and_wait(connection).unwrap();
+        assert_eq!(values.len(), 1);
+        let values = match &values[0] {
+            &resp::RespValue::Array(ref values) => values.clone(),
+            _ => panic!("Not an array"),
+        };
+        assert_eq!(values.len(), 1000);
     }
 
     #[test]
