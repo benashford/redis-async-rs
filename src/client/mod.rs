@@ -114,17 +114,17 @@ mod test {
 
     #[test]
     fn complex_paired_connect() {
-        // let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-        // let connect_f = super::paired_connect(&addr).and_then(|connection| {
-        //     connection
-        //         .send(resp_array!["INCR", "CTR"])
-        //         .and_then(move |value: String| {
-        //             connection.send(resp_array!["SET", "LASTCTR", value])
-        //         })
-        // });
-        // let result: String = run_and_wait(connect_f).unwrap();
-        // assert_eq!(result, "OK");
+        let connect_f = super::paired_connect(&addr).and_then(|connection| {
+            connection
+                .send(resp_array!["INCR", "CTR"])
+                .and_then(move |value: String| {
+                    connection.send(resp_array!["SET", "LASTCTR", value])
+                })
+        });
+        let result: String = run_and_wait(connect_f).unwrap();
+        assert_eq!(result, "OK");
     }
 
     #[test]
