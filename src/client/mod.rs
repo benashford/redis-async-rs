@@ -129,20 +129,20 @@ mod test {
 
     #[test]
     fn sending_a_lot_of_data_test() {
-        // let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-        // let test_f = super::paired_connect(&addr);
-        // let send_data = test_f.and_then(|connection| {
-        //     let mut futures = Vec::with_capacity(1000);
-        //     for i in 0..1000 {
-        //         let key = format!("X_{}", i);
-        //         faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
-        //         futures.push(connection.send(resp_array!["GET", key]));
-        //     }
-        //     futures.remove(999)
-        // });
-        // let result: String = run_and_wait(send_data).unwrap();
-        // assert_eq!(result, "999");
+        let test_f = super::paired_connect(&addr);
+        let send_data = test_f.and_then(|connection| {
+            let mut futures = Vec::with_capacity(1000);
+            for i in 0..1000 {
+                let key = format!("X_{}", i);
+                faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
+                futures.push(connection.send(resp_array!["GET", key]));
+            }
+            futures.remove(999)
+        });
+        let result: String = run_and_wait(send_data).unwrap();
+        assert_eq!(result, "999");
     }
 
     #[test]
