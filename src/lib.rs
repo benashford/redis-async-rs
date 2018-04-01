@@ -57,8 +57,12 @@ extern crate bytes;
 extern crate futures;
 #[macro_use]
 extern crate log;
+
+#[cfg(test)]
 extern crate tokio;
+extern crate tokio_executor;
 extern crate tokio_io;
+extern crate tokio_tcp;
 
 #[macro_use]
 pub mod resp;

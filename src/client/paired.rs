@@ -9,103 +9,200 @@
  */
 
 use std::collections::VecDeque;
+use std::mem;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
-use futures::{future, Future, Sink, Stream};
-use futures::future::Executor;
-use futures::sync::{mpsc, oneshot};
+use futures::{future, Async, AsyncSink, Future, Poll, Sink, Stream, sync::{mpsc, oneshot}};
+
+use tokio_executor::{DefaultExecutor, Executor};
 
 use error;
 use resp;
-use super::connect::{connect, ClientConnection};
+use super::connect::{connect, RespConnection};
 
-type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error>>;
+type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
+
+enum SendStatus {
+    Ok,
+    End,
+    Full(resp::RespValue, bool),
+}
+
+impl SendStatus {
+    fn full(msg: resp::RespValue) -> Self {
+        SendStatus::Full(msg, false)
+    }
+}
+
+enum FlushStatus {
+    Ok,
+    Required,
+}
+
+enum ReceiveStatus {
+    ReadyFinished,
+    ReadyMore,
+    NotReady,
+}
+
+struct PairedConnectionInner {
+    connection: RespConnection,
+    out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+    waiting: VecDeque<oneshot::Sender<resp::RespValue>>,
+
+    send_status: SendStatus,
+    flush_status: FlushStatus,
+}
+
+impl PairedConnectionInner {
+    fn new(
+        con: RespConnection,
+        out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+    ) -> Self {
+        PairedConnectionInner {
+            connection: con,
+            out_rx: out_rx,
+            waiting: VecDeque::new(),
+            send_status: SendStatus::Ok,
+            flush_status: FlushStatus::Ok,
+        }
+    }
+
+    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
+        match self.connection
+            .start_send(msg)
+            .map_err(|e| error!("Error sending message to connection: {}", e))?
+        {
+            AsyncSink::Ready => {
+                self.send_status = SendStatus::Ok;
+                self.flush_status = FlushStatus::Required;
+                Ok(true)
+            }
+            AsyncSink::NotReady(msg) => {
+                self.send_status = SendStatus::full(msg);
+                self.flush_status = FlushStatus::Required;
+                Ok(false)
+            }
+        }
+    }
+
+    fn poll_start_send(&mut self) -> Result<bool, ()> {
+        let message = match self.send_status {
+            SendStatus::End | SendStatus::Full(_, false) => return Ok(false),
+            SendStatus::Full(ref mut msg_rf, true) => unsafe {
+                mem::replace(msg_rf, mem::uninitialized())
+            },
+            SendStatus::Ok => match self.out_rx
+                .poll()
+                .map_err(|_| error!("Error polling for messages to send"))?
+            {
+                Async::Ready(Some((msg, tx))) => {
+                    self.waiting.push_back(tx);
+                    msg
+                }
+                Async::Ready(None) => {
+                    self.send_status = SendStatus::End;
+                    return Ok(false);
+                }
+                Async::NotReady => return Ok(false),
+            },
+        };
+
+        self.impl_start_send(message)
+    }
+
+    fn poll_complete(&mut self) -> Result<(), ()> {
+        match self.flush_status {
+            FlushStatus::Ok => (),
+            FlushStatus::Required => {
+                match self.connection
+                    .poll_complete()
+                    .map_err(|e| error!("Error polling for completeness: {}", e))?
+                {
+                    Async::Ready(()) => self.flush_status = FlushStatus::Ok,
+                    Async::NotReady => (),
+                }
+                if let SendStatus::Full(_, ref mut post) = self.send_status {
+                    if *post == false {
+                        *post = true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self) -> Result<ReceiveStatus, ()> {
+        match self.connection
+            .poll()
+            .map_err(|e| error!("Error polling to receive messages: {}", e))?
+        {
+            Async::Ready(None) => Ok(ReceiveStatus::ReadyFinished),
+            Async::Ready(Some(msg)) => {
+                let tx = self.waiting
+                    .pop_front()
+                    .expect(&format!("Received unexpected message: {:?}", msg));
+                let _ = tx.send(msg);
+                if let SendStatus::End = self.send_status {
+                    if self.waiting.is_empty() {
+                        return Ok(ReceiveStatus::ReadyFinished);
+                    }
+                }
+                Ok(ReceiveStatus::ReadyMore)
+            }
+            Async::NotReady => Ok(ReceiveStatus::NotReady),
+        }
+    }
+}
+
+impl Future for PairedConnectionInner {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        // If there's something to send, send it...
+        let mut sending = true;
+        while sending {
+            sending = self.poll_start_send()?;
+        }
+
+        self.poll_complete()?;
+
+        // If there's something to receive, receive it...
+        let mut receiving = true;
+        while receiving {
+            receiving = match self.receive()? {
+                ReceiveStatus::NotReady => false,
+                ReceiveStatus::ReadyMore => true,
+                ReceiveStatus::ReadyFinished => return Ok(Async::Ready(())),
+            }
+        }
+
+        Ok(Async::NotReady)
+    }
+}
+
+/// A shareable and cheaply cloneable connection to which Redis commands can be sent
+#[derive(Clone)]
+pub struct PairedConnection {
+    out_tx: mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+}
 
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-pub fn paired_connect<E>(addr: &SocketAddr, executor: E) -> PairedConnectionBox
-where
-    E: Executor<Box<Future<Item = (), Error = ()> + Send>> + 'static,
-{
-    let paired_con = connect(addr)
-        .map_err(|e| e.into())
-        .and_then(move |connection| {
-            let ClientConnection { sender, receiver } = connection;
-            let (out_tx, out_rx) = mpsc::unbounded();
-            let running = Arc::new(Mutex::new(true));
-            let sender_running = running.clone();
-            let sender = Box::new(
-                sender
-                    .sink_map_err(|e| error!("Sender error: {}", e))
-                    .send_all(out_rx)
-                    .then(move |r| {
-                        let mut lock = sender_running.lock().expect("Lock is tainted");
-                        *lock = false;
-                        match r {
-                            Ok(_) => {
-                                info!("Sender stream closed...");
-                                future::ok(())
-                            }
-                            Err(e) => {
-                                error!("Error occurred: {:?}", e);
-                                future::err(())
-                            }
-                        }
-                    }),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
+pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
+    let pc_f = connect(addr).map_err(|e| e.into()).map(|connection| {
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
+        let mut executor = DefaultExecutor::current();
+        executor
+            .spawn(paired_connection_inner)
+            .expect("Cannot spawn paired connection");
+        PairedConnection { out_tx }
+    });
 
-            let resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>> =
-                Arc::new(Mutex::new(VecDeque::new()));
-            let receiver_queue = resp_queue.clone();
-            let receiver = Box::new(
-                receiver
-                    .for_each(move |msg| {
-                        let mut queue = receiver_queue.lock().expect("Lock is tainted");
-                        let dest = queue.pop_front().expect("Queue is empty");
-                        let _ = dest.send(msg); // Ignore error as receiving end could have been legitimately closed
-                        if queue.is_empty() {
-                            let running = running.lock().expect("Lock is tainted");
-                            if *running {
-                                Ok(())
-                            } else {
-                                Err(error::Error::EndOfStream)
-                            }
-                        } else {
-                            Ok(())
-                        }
-                    })
-                    .then(|result| match result {
-                        Ok(()) => future::ok(()),
-                        Err(error::Error::EndOfStream) => future::ok(()),
-                        Err(e) => future::err(e),
-                    })
-                    .map(|_| debug!("Closing the receiver stream, receiver closed"))
-                    .map_err(|e| error!("Error receiving message: {}", e)),
-            ) as Box<Future<Item = (), Error = ()> + Send>;
-
-            match executor
-                .execute(sender)
-                .and_then(|_| executor.execute(receiver))
-            {
-                Ok(()) => future::ok(PairedConnection {
-                    out_tx: out_tx,
-                    resp_queue: resp_queue,
-                }),
-                Err(e) => future::err(error::internal(format!(
-                    "Cannot start background tasks: {:?}",
-                    e
-                ))),
-            }
-        })
-        .map_err(|e| e.into());
-    Box::new(paired_con)
-}
-
-pub struct PairedConnection {
-    out_tx: mpsc::UnboundedSender<resp::RespValue>,
-    resp_queue: Arc<Mutex<VecDeque<oneshot::Sender<resp::RespValue>>>>,
+    Box::new(pc_f)
 }
 
 pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
@@ -115,13 +212,11 @@ pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
 ///
 #[macro_export]
 macro_rules! faf {
-    ($e:expr) => (
-        {
-            use $crate::client::paired::SendBox;
-            use $crate::resp;
-            let _:SendBox<resp::RespValue> = $e;
-        }
-    )
+    ($e: expr) => {{
+        use $crate::client::paired::SendBox;
+        use $crate::resp;
+        let _: SendBox<resp::RespValue> = $e;
+    }};
 }
 
 impl PairedConnection {
@@ -148,578 +243,14 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        let mut queue = self.resp_queue.lock().expect("Tainted queue");
-
-        queue.push_back(tx);
-
-        self.out_tx.unbounded_send(msg).expect("Failed to send");
+        self.out_tx
+            .unbounded_send((msg, tx))
+            .expect("Cannot send message!");
 
         let future = rx.then(|v| match v {
             Ok(v) => future::result(T::from_resp(v)),
             Err(e) => future::err(e.into()),
         });
         Box::new(future)
-    }
-}
-
-#[cfg(feature = "commands")]
-///
-/// Implementing Redis commands as specific Rust functions, intended to be easier to use that manually constructing
-/// each as appropriate.
-///
-/// Warning: this is still subject to change.  Only a subset of commands are implemented so far, and not done so
-/// consistently.  This is ongoing to test various options, a winner will be picked in due course.
-///
-/// Protected by a feature flag until the above issues are satisfied.
-///
-mod commands {
-    use std::mem;
-
-    use futures::future;
-
-    use error;
-    use resp::{RespValue, ToRespString};
-
-    use super::SendBox;
-
-    /// Several Redis commands take an open-ended collection of keys, or other such structures that are flattened
-    /// into the redis command.  For example `MGET key1 key2 key3`.
-    ///
-    /// The challenge for this library is anticipating how this might be used by applications.  It's conceivable that
-    /// applications will use vectors, but also might have a fixed set of keys which could either be passed in an array
-    /// or as a reference to a slice.
-    ///
-    pub trait CommandCollection {
-        fn add_to_cmd(self, &mut Vec<RespValue>);
-    }
-
-    impl<T: ToRespString + Into<RespValue>> CommandCollection for Vec<T> {
-        fn add_to_cmd(self, cmd: &mut Vec<RespValue>) {
-            cmd.extend(self.into_iter().map(|key| key.into()));
-        }
-    }
-
-    impl<'a, T: ToRespString + Into<RespValue> + ToOwned<Owned = T>> CommandCollection for &'a [T] {
-        fn add_to_cmd(self, cmd: &mut Vec<RespValue>) {
-            cmd.extend(self.into_iter().map(|key| key.to_owned().into()));
-        }
-    }
-
-    macro_rules! command_collection_ary {
-        ($c:expr) => {
-            impl<T: ToRespString + Into<RespValue>> CommandCollection for [T; $c] {
-                fn add_to_cmd(mut self, cmd: &mut Vec<RespValue>) {
-                    for idx in 0..$c {
-                        let value = unsafe { mem::replace(&mut self[idx], mem::uninitialized()) };
-                        cmd.push(value.into());
-                    }
-                }
-            }
-        }
-    }
-
-    command_collection_ary!(1);
-    command_collection_ary!(2);
-    command_collection_ary!(3);
-    command_collection_ary!(4);
-    command_collection_ary!(5);
-    command_collection_ary!(6);
-    command_collection_ary!(7);
-    command_collection_ary!(8);
-
-    // TODO - check the expansion regarding trailing commas, etc.
-    macro_rules! simple_command {
-        ($n:ident,$k:expr,[ $(($p:ident : $t:ident)),* ],$r:ty) => {
-            pub fn $n< $($t,)* >(&self, ($($p,)*): ($($t,)*)) -> SendBox<$r>
-            where $($t: ToRespString + Into<RespValue>,)*
-            {
-                self.send(resp_array![ $k $(,$p)* ])
-            }
-        };
-        ($n:ident,$k:expr,$r:ty) => {
-            pub fn $n(&self) -> SendBox<$r> {
-                self.send(resp_array![$k])
-            }
-        };
-    }
-
-    impl super::PairedConnection {
-        simple_command!(append, "APPEND", [(key: K), (value: V)], usize);
-        simple_command!(auth, "AUTH", [(password: P)], ());
-        simple_command!(bgrewriteaof, "BGREWRITEAOF", ());
-        simple_command!(bgsave, "BGSAVE", ());
-    }
-
-    pub trait BitcountCommand {
-        fn to_cmd(self) -> RespValue;
-    }
-
-    impl<T: ToRespString + Into<RespValue>> BitcountCommand for (T) {
-        fn to_cmd(self) -> RespValue {
-            resp_array!["BITCOUNT", self]
-        }
-    }
-
-    impl<T: ToRespString + Into<RespValue>> BitcountCommand for (T, usize, usize) {
-        fn to_cmd(self) -> RespValue {
-            resp_array!["BITCOUNT", self.0, self.1.to_string(), self.2.to_string()]
-        }
-    }
-
-    impl super::PairedConnection {
-        pub fn bitcount<C>(&self, cmd: C) -> SendBox<usize>
-        where
-            C: BitcountCommand,
-        {
-            self.send(cmd.to_cmd())
-        }
-    }
-
-    pub struct BitfieldCommands {
-        cmds: Vec<BitfieldCommand>,
-    }
-
-    #[derive(Clone)]
-    pub enum BitfieldCommand {
-        Set(BitfieldOffset, BitfieldTypeAndValue),
-        Get(BitfieldOffset, BitfieldType),
-        Incrby(BitfieldOffset, BitfieldTypeAndValue),
-        Overflow(BitfieldOverflow),
-    }
-
-    impl BitfieldCommand {
-        fn add_to_cmd(&self, cmds: &mut Vec<RespValue>) {
-            match self {
-                &BitfieldCommand::Set(ref offset, ref type_and_value) => {
-                    cmds.push("SET".into());
-                    cmds.push(type_and_value.type_cmd());
-                    cmds.push(offset.to_cmd());
-                    cmds.push(type_and_value.value_cmd());
-                }
-                &BitfieldCommand::Get(ref offset, ref ty) => {
-                    cmds.push("GET".into());
-                    cmds.push(ty.to_cmd());
-                    cmds.push(offset.to_cmd());
-                }
-                &BitfieldCommand::Incrby(ref offset, ref type_and_value) => {
-                    cmds.push("INCRBY".into());
-                    cmds.push(type_and_value.type_cmd());
-                    cmds.push(offset.to_cmd());
-                    cmds.push(type_and_value.value_cmd());
-                }
-                &BitfieldCommand::Overflow(ref overflow) => {
-                    cmds.push("OVERFLOW".into());
-                    cmds.push(overflow.to_cmd());
-                }
-            }
-        }
-    }
-
-    #[derive(Copy, Clone)]
-    pub enum BitfieldType {
-        Signed(usize),
-        Unsigned(usize),
-    }
-
-    impl BitfieldType {
-        fn to_cmd(&self) -> RespValue {
-            match self {
-                &BitfieldType::Signed(size) => format!("i{}", size),
-                &BitfieldType::Unsigned(size) => format!("u{}", size),
-            }.into()
-        }
-    }
-
-    #[derive(Copy, Clone)]
-    pub enum BitfieldOverflow {
-        Wrap,
-        Sat,
-        Fail,
-    }
-
-    impl BitfieldOverflow {
-        fn to_cmd(&self) -> RespValue {
-            match self {
-                &BitfieldOverflow::Wrap => "WRAP",
-                &BitfieldOverflow::Sat => "SAT",
-                &BitfieldOverflow::Fail => "FAIL",
-            }.into()
-        }
-    }
-
-    #[derive(Clone)]
-    pub enum BitfieldTypeAndValue {
-        Signed(usize, isize),
-        Unsigned(usize, usize),
-    }
-
-    impl BitfieldTypeAndValue {
-        fn type_cmd(&self) -> RespValue {
-            match self {
-                &BitfieldTypeAndValue::Signed(size, _) => format!("i{}", size),
-                &BitfieldTypeAndValue::Unsigned(size, _) => format!("u{}", size),
-            }.into()
-        }
-
-        fn value_cmd(&self) -> RespValue {
-            match self {
-                &BitfieldTypeAndValue::Signed(_, amt) => amt.to_string(),
-                &BitfieldTypeAndValue::Unsigned(_, amt) => amt.to_string(),
-            }.into()
-        }
-    }
-
-    #[derive(Clone)]
-    pub enum BitfieldOffset {
-        Bits(usize),
-        Positional(usize),
-    }
-
-    impl BitfieldOffset {
-        fn to_cmd(&self) -> RespValue {
-            match self {
-                &BitfieldOffset::Bits(size) => size.to_string(),
-                &BitfieldOffset::Positional(size) => format!("#{}", size),
-            }.into()
-        }
-    }
-
-    impl BitfieldCommands {
-        pub fn new() -> Self {
-            BitfieldCommands { cmds: Vec::new() }
-        }
-
-        pub fn set(&mut self, offset: BitfieldOffset, value: BitfieldTypeAndValue) -> &mut Self {
-            self.cmds.push(BitfieldCommand::Set(offset, value));
-            self
-        }
-
-        pub fn get(&mut self, offset: BitfieldOffset, ty: BitfieldType) -> &mut Self {
-            self.cmds.push(BitfieldCommand::Get(offset, ty));
-            self
-        }
-
-        pub fn incrby(&mut self, offset: BitfieldOffset, value: BitfieldTypeAndValue) -> &mut Self {
-            self.cmds.push(BitfieldCommand::Incrby(offset, value));
-            self
-        }
-
-        pub fn overflow(&mut self, overflow: BitfieldOverflow) -> &mut Self {
-            self.cmds.push(BitfieldCommand::Overflow(overflow));
-            self
-        }
-
-        fn to_cmd(&self, key: RespValue) -> RespValue {
-            let mut cmd = Vec::new();
-            cmd.push("BITFIELD".into());
-            cmd.push(key);
-            for subcmd in self.cmds.iter() {
-                subcmd.add_to_cmd(&mut cmd);
-            }
-            RespValue::Array(cmd)
-        }
-    }
-
-    impl super::PairedConnection {
-        pub fn bitfield<K>(&self, (key, cmds): (K, &BitfieldCommands)) -> SendBox<Vec<Option<i64>>>
-        where
-            K: ToRespString + Into<RespValue>,
-        {
-            self.send(cmds.to_cmd(key.into()))
-        }
-    }
-
-    #[derive(Copy, Clone)]
-    pub enum BitOp {
-        And,
-        Or,
-        Xor,
-        Not,
-    }
-
-    impl From<BitOp> for RespValue {
-        fn from(op: BitOp) -> RespValue {
-            match op {
-                BitOp::And => "AND",
-                BitOp::Or => "OR",
-                BitOp::Xor => "XOR",
-                BitOp::Not => "NOT",
-            }.into()
-        }
-    }
-
-    impl super::PairedConnection {
-        pub fn bitop<K, C>(&self, (op, destkey, keys): (BitOp, K, C)) -> SendBox<i64>
-        where
-            K: ToRespString + Into<RespValue>,
-            C: CommandCollection,
-        {
-            let mut cmd = Vec::new();
-            cmd.push(op.into());
-            cmd.push(destkey.into());
-            keys.add_to_cmd(&mut cmd);
-
-            if cmd.len() > 2 {
-                self.send(RespValue::Array(cmd))
-            } else {
-                Box::new(future::err(error::internal(
-                    "BITOP command needs at least one key",
-                )))
-            }
-        }
-    }
-
-    pub trait BitposCommand {
-        fn to_cmd(self) -> RespValue;
-    }
-
-    impl<K, B> BitposCommand for (K, B, usize)
-    where
-        K: ToRespString + Into<RespValue>,
-        B: ToRespString + Into<RespValue>,
-    {
-        fn to_cmd(self) -> RespValue {
-            resp_array!["BITPOS", self.0, self.1, self.2.to_string()]
-        }
-    }
-
-    impl<K, B> BitposCommand for (K, B, usize, usize)
-    where
-        K: ToRespString + Into<RespValue>,
-        B: ToRespString + Into<RespValue>,
-    {
-        fn to_cmd(self) -> RespValue {
-            resp_array![
-                "BITPOS",
-                self.0,
-                self.1,
-                self.2.to_string(),
-                self.3.to_string()
-            ]
-        }
-    }
-
-    impl super::PairedConnection {
-        pub fn bitpos<C>(&self, cmd: C) -> SendBox<i64>
-        where
-            C: BitposCommand,
-        {
-            self.send(cmd.to_cmd())
-        }
-    }
-
-    // MARKER - all accounted for above this line
-
-    impl super::PairedConnection {
-        // TODO - there may be a way of generalising this kind of thing
-        pub fn del<C>(&self, keys: (C)) -> SendBox<usize>
-        where
-            C: CommandCollection,
-        {
-            let mut cmd = Vec::new();
-            cmd.push("DEL".into());
-            keys.add_to_cmd(&mut cmd);
-
-            if cmd.len() > 1 {
-                self.send(RespValue::Array(cmd))
-            } else {
-                Box::new(future::err(error::internal(
-                    "DEL command needs at least one key",
-                )))
-            }
-        }
-    }
-
-    impl super::PairedConnection {
-        // TODO: incomplete implementation
-        pub fn set<K, V>(&self, (key, value): (K, V)) -> SendBox<()>
-        where
-            K: ToRespString + Into<RespValue>,
-            V: ToRespString + Into<RespValue>,
-        {
-            self.send(resp_array!["SET", key, value])
-        }
-    }
-
-    #[cfg(test)]
-    mod test {
-        use futures::future;
-        use futures::Future;
-
-        use tokio_core::reactor::Core;
-
-        use super::{BitfieldCommands, BitfieldOffset, BitfieldOverflow, BitfieldTypeAndValue};
-
-        use super::super::error::Error;
-
-        fn setup() -> (Core, super::super::PairedConnectionBox) {
-            let core = Core::new().unwrap();
-            let handle = core.handle();
-            let addr = "127.0.0.1:6379".parse().unwrap();
-
-            (core, super::super::paired_connect(&addr, &handle))
-        }
-
-        fn setup_and_delete(keys: Vec<&str>) -> (Core, super::super::PairedConnectionBox) {
-            let (mut core, connection) = setup();
-
-            let delete = connection.and_then(|connection| connection.del(keys).map(|_| connection));
-
-            let connection = core.run(delete).unwrap();
-            (core, Box::new(future::ok(connection)))
-        }
-
-        #[test]
-        fn append_test() {
-            let (mut core, connection) = setup_and_delete(vec!["APPENDKEY"]);
-
-            let connection =
-                connection.and_then(|connection| connection.append(("APPENDKEY", "ABC")));
-
-            let count = core.run(connection).unwrap();
-            assert_eq!(count, 3);
-        }
-
-        #[test]
-        fn bitcount_test() {
-            let (mut core, connection) = setup();
-
-            let connection = connection.and_then(|connection| {
-                connection
-                    .set(("BITCOUNT_KEY", "foobar"))
-                    .and_then(move |_| {
-                        let mut counts = Vec::new();
-                        counts.push(connection.bitcount("BITCOUNT_KEY"));
-                        counts.push(connection.bitcount(("BITCOUNT_KEY", 0, 0)));
-                        counts.push(connection.bitcount(("BITCOUNT_KEY", 1, 1)));
-                        future::join_all(counts)
-                    })
-            });
-
-            let counts = core.run(connection).unwrap();
-            assert_eq!(counts.len(), 3);
-            assert_eq!(counts[0], 26);
-            assert_eq!(counts[1], 4);
-            assert_eq!(counts[2], 6);
-        }
-
-        #[test]
-        fn bitfield_test() {
-            let (mut core, connection) = setup_and_delete(vec!["BITFIELD_KEY"]);
-
-            let connection = connection.and_then(|connection| {
-                let mut bitfield_commands = BitfieldCommands::new();
-                bitfield_commands.incrby(
-                    BitfieldOffset::Bits(100),
-                    BitfieldTypeAndValue::Unsigned(2, 1),
-                );
-                bitfield_commands.overflow(BitfieldOverflow::Sat);
-                bitfield_commands.incrby(
-                    BitfieldOffset::Bits(102),
-                    BitfieldTypeAndValue::Unsigned(2, 1),
-                );
-
-                connection.bitfield(("BITFIELD_KEY", &bitfield_commands))
-            });
-
-            let results = core.run(connection).unwrap();
-            assert_eq!(results.len(), 2);
-            assert_eq!(results[0], Some(1));
-            assert_eq!(results[1], Some(1));
-        }
-
-        #[test]
-        fn bitfield_nil_response() {
-            let (mut core, connection) = setup_and_delete(vec!["BITFIELD_NIL_KEY"]);
-
-            let connection = connection.and_then(|connection| {
-                let mut bitfield_commands = BitfieldCommands::new();
-                bitfield_commands.overflow(BitfieldOverflow::Fail);
-                bitfield_commands.incrby(
-                    BitfieldOffset::Bits(102),
-                    BitfieldTypeAndValue::Unsigned(2, 4),
-                );
-                connection.bitfield(("BITFIELD_NIL_KEY", &bitfield_commands))
-            });
-
-            let results = core.run(connection).unwrap();
-            assert_eq!(results.len(), 1);
-            assert_eq!(results[0], None);
-        }
-
-        #[test]
-        fn del_test_vec() {
-            let (mut core, connection) = setup();
-
-            let del_keys = vec!["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection.and_then(|connection| connection.del(del_keys));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_vec_string() {
-            let (mut core, connection) = setup();
-
-            let del_keys = vec![String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
-            let connection = connection.and_then(|connection| connection.del(del_keys));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_slice() {
-            let (mut core, connection) = setup();
-
-            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection.and_then(|connection| connection.del(&del_keys[..]));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_slice_string() {
-            let (mut core, connection) = setup();
-
-            let del_keys = [String::from("DEL_KEY_1"), String::from("DEL_KEY_2")];
-            let connection = connection.and_then(|connection| connection.del(&del_keys[..]));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_ary() {
-            let (mut core, connection) = setup();
-
-            let del_keys = ["DEL_KEY_1"];
-            let connection = connection.and_then(|connection| connection.del(del_keys));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_test_ary2() {
-            let (mut core, connection) = setup();
-
-            let del_keys = ["DEL_KEY_1", "DEL_KEY_2"];
-            let connection = connection.and_then(|connection| connection.del(del_keys));
-
-            let _ = core.run(connection).unwrap();
-        }
-
-        #[test]
-        fn del_not_enough_keys() {
-            let (mut core, connection) = setup();
-
-            let del_keys: Vec<String> = vec![];
-            let connection = connection.and_then(|connection| connection.del(del_keys));
-
-            let result = core.run(connection);
-            if let &Err(Error::Internal(ref msg)) = &result {
-                assert_eq!("DEL command needs at least one key", msg);
-            } else {
-                panic!("Should have errored: {:?}", result);
-            }
-        }
     }
 }

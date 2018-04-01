@@ -25,41 +25,30 @@ pub mod connect;
 pub mod paired;
 pub mod pubsub;
 
-pub use self::connect::{connect, ClientConnection};
-pub use self::paired::{paired_connect, PairedConnection};
-pub use self::pubsub::{pubsub_connect, PubsubConnection};
+pub use self::{connect::connect, paired::{paired_connect, PairedConnection},
+               pubsub::{pubsub_connect, PubsubConnection}};
 
 #[cfg(test)]
 mod test {
-    use std::fmt;
     use std::io;
 
-    use futures::future;
     use futures::sync::oneshot;
     use futures::{stream, Future, Sink, Stream};
 
-    use tokio::executor::current_thread;
+    use tokio;
 
     use error;
     use resp;
 
-    fn extract_result<F, R, E>(f: F) -> R
+    fn run_and_wait<R, E, F>(f: F) -> Result<R, E>
     where
-        R: 'static,
-        F: Future<Item = R, Error = E> + 'static,
-        E: fmt::Debug + 'static,
+        F: Future<Item = R, Error = E> + Send + 'static,
+        R: Send + 'static,
+        E: Send + 'static,
     {
-        let r = current_thread::run(|_| {
-            let (tx, rx) = oneshot::channel();
-            current_thread::spawn(f.then(move |r| match tx.send(r) {
-                Ok(_) => future::ok(()),
-                Err(_) => future::err(()),
-            }));
-            rx
-        });
-        r.wait()
-            .expect("Result was cancelled")
-            .expect("Future failed")
+        let (tx, rx) = oneshot::channel();
+        tokio::run(f.then(|r| tx.send(r).map_err(|_| panic!("Cannot send Result"))));
+        rx.wait().expect("Cannot wait for a result")
     }
 
     #[test]
@@ -69,15 +58,13 @@ mod test {
         let connection = super::connect(&addr)
             .map_err(|e| e.into())
             .and_then(|connection| {
-                let a = connection
-                    .sender
+                connection
                     .send(resp_array!["PING", "TEST"])
-                    .map_err(|e| e.into());
-                let b = connection.receiver.take(1).collect();
-                a.join(b)
-            });
+                    .map_err(|e| e.into())
+            })
+            .and_then(|connection| connection.take(1).collect());
 
-        let (_, values) = extract_result(connection);
+        let values = run_and_wait(connection).unwrap();
 
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], "TEST".into());
@@ -95,14 +82,13 @@ mod test {
                     (0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]),
                 );
                 ops.push(resp_array!["SMEMBERS", "test_set"]);
-                let send = connection
-                    .sender
+                connection
                     .send_all(stream::iter_ok::<_, io::Error>(ops))
-                    .map_err(|e| e.into());
-                let receive = connection.receiver.skip(1001).take(1).collect();
-                send.join(receive)
-            });
-        let (_, values) = extract_result(connection);
+                    .map(|(sender, _)| sender)
+                    .map_err(|e| e.into())
+            })
+            .and_then(|connection| connection.skip(1001).take(1).collect());
+        let values = run_and_wait(connection).unwrap();
         assert_eq!(values.len(), 1);
         let values = match &values[0] {
             &resp::RespValue::Array(ref values) => values.clone(),
@@ -115,20 +101,13 @@ mod test {
     fn can_paired_connect() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connect_f =
-            super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
-                let res_f = connection.send(resp_array!["PING", "TEST"]).map(|v| {
-                    println!("FIRST: {:?}", v);
-                    v
-                });
-                faf!(connection.send(resp_array!["SET", "X", "123"]));
-                let wait_f = connection.send(resp_array!["GET", "X"]).map(|v| {
-                    println!("THIRD: {:?}", v);
-                    v
-                });
-                res_f.join(wait_f)
-            });
-        let (result_1, result_2): (String, String) = extract_result(connect_f);
+        let connect_f = super::paired_connect(&addr).and_then(|connection| {
+            let res_f = connection.send(resp_array!["PING", "TEST"]);
+            faf!(connection.send(resp_array!["SET", "X", "123"]));
+            let wait_f = connection.send(resp_array!["GET", "X"]);
+            res_f.join(wait_f)
+        });
+        let (result_1, result_2): (String, String) = run_and_wait(connect_f).unwrap();
         assert_eq!(result_1, "TEST");
         assert_eq!(result_2, "123");
     }
@@ -137,15 +116,14 @@ mod test {
     fn complex_paired_connect() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connect_f =
-            super::paired_connect(&addr, current_thread::task_executor()).and_then(|connection| {
-                connection
-                    .send(resp_array!["INCR", "CTR"])
-                    .and_then(move |value: String| {
-                        connection.send(resp_array!["SET", "LASTCTR", value])
-                    })
-            });
-        let result: String = extract_result(connect_f);
+        let connect_f = super::paired_connect(&addr).and_then(|connection| {
+            connection
+                .send(resp_array!["INCR", "CTR"])
+                .and_then(move |value: String| {
+                    connection.send(resp_array!["SET", "LASTCTR", value])
+                })
+        });
+        let result: String = run_and_wait(connect_f).unwrap();
         assert_eq!(result, "OK");
     }
 
@@ -153,7 +131,7 @@ mod test {
     fn sending_a_lot_of_data_test() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let test_f = super::paired_connect(&addr, current_thread::task_executor());
+        let test_f = super::paired_connect(&addr);
         let send_data = test_f.and_then(|connection| {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
@@ -163,15 +141,15 @@ mod test {
             }
             futures.remove(999)
         });
-        let result: String = extract_result(send_data);
+        let result: String = run_and_wait(send_data).unwrap();
         assert_eq!(result, "999");
     }
 
     #[test]
     fn pubsub_test() {
         let addr = "127.0.0.1:6379".parse().unwrap();
-        let paired_c = super::paired_connect(&addr, current_thread::task_executor());
-        let pubsub_c = super::pubsub_connect(&addr, current_thread::task_executor());
+        let paired_c = super::paired_connect(&addr);
+        let pubsub_c = super::pubsub_connect(&addr);
         let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
             let subscribe = pubsub.subscribe("test-topic");
             subscribe.and_then(move |msgs| {
@@ -187,7 +165,7 @@ mod test {
                 .collect()
                 .map_err(|_| error::internal("unreachable"))
         });
-        let result = extract_result(tst);
+        let result = run_and_wait(tst).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], "test-message".into());
         assert_eq!(result[1], "test-message2".into());

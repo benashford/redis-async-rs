@@ -20,7 +20,7 @@ Initially I'm focussing on single-server Redis instances, another long-term goal
 There are a number of pre-existing Redis clients for Rust, two of particular interest are:
 
 * Tokio-Redis - https://github.com/tokio-rs/tokio-redis - written as a demo of Tokio, by Tokio developers
-* Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio
+* Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio (yet)
 
 ## Usage
 
@@ -28,7 +28,7 @@ There are three functions in `redis_async::client` which provide functionality. 
 
 ### Low-level interface
 
-The function `client::connect` returns a pair of `Sink` and `Stream` which both transport `resp::RespValue`s between client and Redis, these work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).
+The function `client::connect` returns a future that resolves to a connection which implements both `Sink` and `Stream`.  These work independently of one another to allow pipelining.  It is the responsibility of the caller to match responses to requests.  It is also the responsibility of the client to convert application data into instances of `resp::RespValue` and back (there are conversion traits available for common examples).
 
 This is a very low-level API compared to most Redis clients, but is done so intentionally, for two reasons: 1) it is the common demoniator between a functional Redis client (i.e. is able to support all types of requests, including those that block and have streaming responses), and 2) it results in clean `Sink`s and `Stream`s which will be composable with other Tokio-based libraries.
 
@@ -104,8 +104,8 @@ In most cases the difference is small.
 
 | Benchmark        | redis-rs (the control)                                            | redis-async-rs  |
 | ---------------- | ----------------------------------------------------------------- | --------------- |
-| simple_getsetdel | 132,856 ns/iter (not pipelined)<br>54,967 ns/iter (pipelined)     | 104,023 ns/iter |
-| complex          | 10,588,664 ns/iter (non pipelined)<br>695,551 ns/iter (pipelined) | 848,265 ns/iter |
+| simple_getsetdel | 139,293 ns/iter (not pipelined)<br>54,216 ns/iter (pipelined)     | 136,435 ns/iter |
+| complex          | 9,909,434 ns/iter (non pipelined)<br>539,767 ns/iter (pipelined)  | 718,678 ns/iter |
 
 For `redis-rs` each benchmark has a pipelined and a non-pipelined version.  For `redis-async-rs` there is only one version as pipelining is handled implicitely.
 

@@ -19,8 +19,6 @@ use std::env;
 use futures::{future, Future};
 use futures::sync::oneshot;
 
-use tokio::executor::current_thread;
-
 use redis_async::client;
 
 // An artificial "realistic" non-trivial example to demonstrate usage
@@ -35,7 +33,7 @@ fn main() {
         .parse()
         .unwrap();
 
-    let test_f = client::paired_connect(&addr, current_thread::task_executor());
+    let test_f = client::paired_connect(&addr);
     let (tx, rx) = oneshot::channel();
 
     let send_data = test_f.and_then(|connection| {
@@ -67,7 +65,7 @@ fn main() {
         }
     });
 
-    current_thread::run(|_| current_thread::spawn(deliver));
+    tokio::run(deliver);
 
     let result: Vec<String> = rx.wait().expect("Waiting for delivery");
     assert_eq!(result.len(), test_data_size);

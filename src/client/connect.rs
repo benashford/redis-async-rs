@@ -11,36 +11,31 @@
 use std::io;
 use std::net::SocketAddr;
 
-use futures::{Future, Sink, Stream};
+use futures::Future;
 
-use tokio::net::TcpStream;
+use tokio_tcp::TcpStream;
 
-use tokio_io::AsyncRead;
+use tokio_io::{AsyncRead, codec::Framed};
 
-use error;
 use resp;
 
-/// Connect to a Redis server and return paired Sink and Stream for reading and writing
-/// asynchronously.
-pub fn connect(
-    addr: &SocketAddr,
-) -> Box<Future<Item = ClientConnection, Error = io::Error> + Send> {
-    let con = TcpStream::connect(addr).map(move |socket| {
-        let framed = socket.framed(resp::RespCodec);
-        let (write_f, read_f) = framed.split();
-        ClientConnection {
-            sender: Box::new(write_f),
-            receiver: Box::new(read_f),
-        }
-    });
-    Box::new(con)
-}
+pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 
-// TODO - is the boxing necessary?  It makes the type signature much simpler
-/// A low-level client connection representing a sender and a receiver.
+/// Connect to a Redis server and return a Future that resolves to a
+/// `RespConnection` for reading and writing asynchronously.
 ///
-/// The two halves operate independently from one another
-pub struct ClientConnection {
-    pub sender: Box<Sink<SinkItem = resp::RespValue, SinkError = io::Error> + Send>,
-    pub receiver: Box<Stream<Item = resp::RespValue, Error = error::Error> + Send>,
+/// Each `RespConnection` implements both `Sink` and `Stream` and read and
+/// writes `RESP` objects.
+///
+/// This is a low-level interface to enable the creation of higher-level
+/// functionality.
+///
+/// The sink and stream sides behave independently of each other, it is the
+/// responsibility of the calling application to determine what results are
+/// paired to a particular command.
+///
+/// But since most Redis usages involve issue commands that result in one
+/// single result, this library also implements `paired_connect`.
+pub fn connect(addr: &SocketAddr) -> Box<Future<Item = RespConnection, Error = io::Error> + Send> {
+    Box::new(TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec)))
 }

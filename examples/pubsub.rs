@@ -17,8 +17,6 @@ use std::env;
 use futures::{Future, Stream};
 use futures::future;
 
-use tokio::executor::current_thread;
-
 use redis_async::client;
 use redis_async::resp::FromResp;
 
@@ -30,8 +28,8 @@ fn main() {
         .parse()
         .unwrap();
 
-    let msgs = client::pubsub_connect(&addr, current_thread::task_executor())
-        .and_then(move |connection| connection.subscribe(topic));
+    let msgs =
+        client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(topic));
     let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
         msgs.for_each(|message| {
             println!("{}", String::from_resp(message).unwrap());
@@ -39,5 +37,5 @@ fn main() {
         })
     });
 
-    current_thread::run(|_| current_thread::spawn(the_loop));
+    tokio::run(the_loop);
 }

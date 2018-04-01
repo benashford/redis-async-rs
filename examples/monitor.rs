@@ -17,8 +17,6 @@ use std::env;
 
 use futures::{future, Future, Sink, Stream};
 
-use tokio::executor::current_thread;
-
 use redis_async::client;
 
 fn main() {
@@ -31,17 +29,16 @@ fn main() {
     let monitor = client::connect(&addr)
         .map_err(|e| e.into())
         .and_then(|connection| {
-            let client::ClientConnection { sender, receiver } = connection;
-            sender
+            connection
                 .send(resp_array!["MONITOR"])
                 .map_err(|e| e.into())
-                .and_then(move |_| {
-                    receiver.for_each(|incoming| {
-                        println!("{:?}", incoming);
-                        future::ok(())
-                    })
-                })
+        })
+        .and_then(|connection| {
+            connection.skip(1).for_each(|incoming| {
+                println!("{:?}", incoming);
+                future::ok(())
+            })
         });
 
-    current_thread::run(|_| current_thread::spawn(monitor.map_err(|e| println!("ERROR: {:?}", e))));
+    tokio::run(monitor.map_err(|e| println!("ERROR: {:?}", e)));
 }
