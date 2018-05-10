@@ -25,8 +25,10 @@ pub mod connect;
 pub mod paired;
 pub mod pubsub;
 
-pub use self::{connect::connect, paired::{paired_connect, PairedConnection},
-               pubsub::{pubsub_connect, PubsubConnection}};
+pub use self::{
+    connect::connect, paired::{paired_connect, PairedConnection},
+    pubsub::{pubsub_connect, PubsubConnection},
+};
 
 #[cfg(test)]
 mod test {
@@ -103,7 +105,7 @@ mod test {
 
         let connect_f = super::paired_connect(&addr).and_then(|connection| {
             let res_f = connection.send(resp_array!["PING", "TEST"]);
-            faf!(connection.send(resp_array!["SET", "X", "123"]));
+            connection.send_and_forget(resp_array!["SET", "X", "123"]);
             let wait_f = connection.send(resp_array!["GET", "X"]);
             res_f.join(wait_f)
         });
@@ -136,7 +138,7 @@ mod test {
             let mut futures = Vec::with_capacity(1000);
             for i in 0..1000 {
                 let key = format!("X_{}", i);
-                faf!(connection.send(resp_array!["SET", &key, i.to_string()]));
+                connection.send_and_forget(resp_array!["SET", &key, i.to_string()]);
                 futures.push(connection.send(resp_array!["GET", key]));
             }
             futures.remove(999)
@@ -153,8 +155,12 @@ mod test {
         let msgs = paired_c.join(pubsub_c).and_then(|(paired, pubsub)| {
             let subscribe = pubsub.subscribe("test-topic");
             subscribe.and_then(move |msgs| {
-                faf!(paired.send(resp_array!["PUBLISH", "test-topic", "test-message"]));
-                faf!(paired.send(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]));
+                paired.send_and_forget(resp_array!["PUBLISH", "test-topic", "test-message"]);
+                paired.send_and_forget(resp_array![
+                    "PUBLISH",
+                    "test-not-topic",
+                    "test-message-1.5"
+                ]);
                 paired
                     .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
                     .map(|_: resp::RespValue| msgs)

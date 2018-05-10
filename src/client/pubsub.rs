@@ -8,17 +8,19 @@
  * except according to those terms.
  */
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 use std::net::SocketAddr;
 
-use futures::{Async, AsyncSink, Future, Poll, Sink, Stream, stream::Fuse, sync::{mpsc, oneshot}};
+use futures::{
+    stream::Fuse, sync::{mpsc, oneshot}, Async, AsyncSink, Future, Poll, Sink, Stream,
+};
 
 use tokio_executor::{DefaultExecutor, Executor};
 
+use super::connect::{connect, RespConnection};
 use error;
 use resp;
 use resp::FromResp;
-use super::connect::{connect, RespConnection};
 
 #[derive(Debug)]
 enum PubsubEvent {
@@ -206,8 +208,8 @@ pub struct PubsubConnection {
 /// Returns a future that resolves to a `PubsubConnection`.
 pub fn pubsub_connect(
     addr: &SocketAddr,
-) -> Box<Future<Item = PubsubConnection, Error = error::Error> + Send> {
-    let pc_f = connect(addr).map_err(|e| e.into()).map(|connection| {
+) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
+    connect(addr).map_err(|e| e.into()).map(|connection| {
         let (out_tx, out_rx) = mpsc::unbounded();
         let pubsub_connection_inner = Box::new(PubsubConnectionInner::new(connection, out_rx));
         let mut default_executor = DefaultExecutor::current();
@@ -215,8 +217,7 @@ pub fn pubsub_connect(
             .spawn(pubsub_connection_inner)
             .expect("Cannot spawn pubsub connection");
         PubsubConnection { out_tx }
-    });
-    Box::new(pc_f)
+    })
 }
 
 impl PubsubConnection {
@@ -227,7 +228,7 @@ impl PubsubConnection {
     pub fn subscribe<T: Into<String>>(
         &self,
         topic: T,
-    ) -> Box<Future<Item = PubsubStream, Error = error::Error> + Send> {
+    ) -> impl Future<Item = PubsubStream, Error = error::Error> + Send {
         let topic = topic.into();
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
@@ -240,7 +241,7 @@ impl PubsubConnection {
             underlying: rx,
             con: self.clone(),
         };
-        Box::new(signal_r.map(|_| stream).map_err(|e| e.into()))
+        signal_r.map(|_| stream).map_err(|e| e.into())
     }
 
     pub fn unsubscribe<T: Into<String>>(&self, topic: T) {

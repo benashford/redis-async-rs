@@ -13,11 +13,11 @@ extern crate futures;
 extern crate redis_async;
 extern crate tokio;
 
-use std::sync::Arc;
 use std::env;
+use std::sync::Arc;
 
-use futures::{future, Future};
 use futures::sync::oneshot;
+use futures::{future, Future};
 
 use redis_async::client;
 
@@ -45,7 +45,7 @@ fn main() {
                 .and_then(move |ctr: String| {
                     let key = format!("rt_{}", ctr);
                     let d_val = data.0.to_string();
-                    faf!(connection_inner.send(resp_array!["SET", &key, d_val]));
+                    connection_inner.send_and_forget(resp_array!["SET", &key, d_val]);
                     connection_inner.send(resp_array!["SET", data.1, key])
                 })
         });
@@ -68,5 +68,6 @@ fn main() {
     tokio::run(deliver);
 
     let result: Vec<String> = rx.wait().expect("Waiting for delivery");
+    println!("RESULT: {:?}", result);
     assert_eq!(result.len(), test_data_size);
 }

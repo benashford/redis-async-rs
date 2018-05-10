@@ -15,7 +15,7 @@ use futures::Future;
 
 use tokio_tcp::TcpStream;
 
-use tokio_io::{AsyncRead, codec::Framed};
+use tokio_io::{codec::Framed, AsyncRead};
 
 use resp;
 
@@ -36,6 +36,6 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub fn connect(addr: &SocketAddr) -> Box<Future<Item = RespConnection, Error = io::Error> + Send> {
-    Box::new(TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec)))
+pub fn connect(addr: &SocketAddr) -> impl Future<Item = RespConnection, Error = io::Error> + Send {
+    TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec))
 }

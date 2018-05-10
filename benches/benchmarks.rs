@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use test::Bencher;
 
-use futures::Future;
 use futures::sync::oneshot;
+use futures::Future;
 
 use tokio::runtime::Runtime;
 
@@ -52,7 +52,7 @@ fn bench_simple_getsetdel(b: &mut Bencher) {
     let connection = open_paired_connection(&mut runtime, &addr);
 
     b.iter(|| {
-        faf!(connection.send(resp_array!["SET", "test_key", "42"]));
+        connection.send_and_forget(resp_array!["SET", "test_key", "42"]);
         let get = connection.send(resp_array!["GET", "test_key"]);
         let del = connection.send(resp_array!["DEL", "test_key"]);
         let get_set = get.join(del);
@@ -75,7 +75,7 @@ fn bench_big_pipeline(b: &mut Bencher) {
     b.iter(|| {
         for x in 0..data_size {
             let test_key = format!("test_{}", x);
-            faf!(connection.send(resp_array!["SET", test_key, x.to_string()]));
+            connection.send_and_forget(resp_array!["SET", test_key, x.to_string()]);
         }
         let mut gets = Vec::with_capacity(data_size);
         for x in 0..data_size {
