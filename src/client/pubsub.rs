@@ -52,7 +52,8 @@ impl PubsubConnectionInner {
 
     /// Returns true = OK, more can be sent, or false = sink is full, needs flushing
     fn do_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self.connection
+        match self
+            .connection
             .start_send(msg)
             .map_err(|e| error!("Cannot send subscription request to Redis: {}", e))?
         {
@@ -81,7 +82,8 @@ impl PubsubConnectionInner {
             }
         }
         loop {
-            match self.out_rx
+            match self
+                .out_rx
                 .poll()
                 .map_err(|_| error!("Cannot poll for new subscriptions"))?
             {
@@ -162,7 +164,8 @@ impl PubsubConnectionInner {
     /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
     fn handle_messages(&mut self) -> Result<bool, ()> {
         loop {
-            match self.connection
+            match self
+                .connection
                 .poll()
                 .map_err(|e| error!("Polling error for messages: {}", e))?
             {
@@ -225,19 +228,15 @@ impl PubsubConnection {
     ///
     /// Returns a future that resolves to a `Stream` that contains all the messages published on
     /// that particular topic.
-    pub fn subscribe<T: Into<String>>(
-        &self,
-        topic: T,
-    ) -> impl Future<Item = PubsubStream, Error = error::Error> + Send {
-        let topic = topic.into();
+    pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
         self.out_tx
-            .unbounded_send(PubsubEvent::Subscribe(topic.clone(), tx, signal_t))
+            .unbounded_send(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))
             .expect("Cannot queue subscription request");
 
         let stream = PubsubStream {
-            topic: topic,
+            topic: topic.to_owned(),
             underlying: rx,
             con: self.clone(),
         };
