@@ -39,6 +39,7 @@ enum FlushStatus {
     Required,
 }
 
+#[derive(Debug)]
 enum ReceiveStatus {
     ReadyFinished,
     ReadyMore,
@@ -69,7 +70,8 @@ impl PairedConnectionInner {
     }
 
     fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self.connection
+        match self
+            .connection
             .start_send(msg)
             .map_err(|e| error!("Error sending message to connection: {}", e))?
         {
@@ -92,7 +94,8 @@ impl PairedConnectionInner {
             SendStatus::Full(ref mut msg_rf, true) => unsafe {
                 mem::replace(msg_rf, mem::uninitialized())
             },
-            SendStatus::Ok => match self.out_rx
+            SendStatus::Ok => match self
+                .out_rx
                 .poll()
                 .map_err(|_| error!("Error polling for messages to send"))?
             {
@@ -115,7 +118,8 @@ impl PairedConnectionInner {
         match self.flush_status {
             FlushStatus::Ok => (),
             FlushStatus::Required => {
-                match self.connection
+                match self
+                    .connection
                     .poll_complete()
                     .map_err(|e| error!("Error polling for completeness: {}", e))?
                 {
@@ -133,21 +137,26 @@ impl PairedConnectionInner {
     }
 
     fn receive(&mut self) -> Result<ReceiveStatus, ()> {
-        match self.connection
+        if let SendStatus::End = self.send_status {
+            if self.waiting.is_empty() {
+                return Ok(ReceiveStatus::ReadyFinished);
+            }
+        }
+        match self
+            .connection
             .poll()
             .map_err(|e| error!("Error polling to receive messages: {}", e))?
         {
-            Async::Ready(None) => Ok(ReceiveStatus::ReadyFinished),
+            Async::Ready(None) => {
+                error!("Connection to Redis closed unexpectedly");
+                Err(())
+            }
             Async::Ready(Some(msg)) => {
-                let tx = self.waiting
-                    .pop_front()
-                    .expect(&format!("Received unexpected message: {:?}", msg));
+                let tx = match self.waiting.pop_front() {
+                    Some(tx) => tx,
+                    None => panic!("Received unexpected message: {:?}", msg),
+                };
                 let _ = tx.send(msg);
-                if let SendStatus::End = self.send_status {
-                    if self.waiting.is_empty() {
-                        return Ok(ReceiveStatus::ReadyFinished);
-                    }
-                }
                 Ok(ReceiveStatus::ReadyMore)
             }
             Async::NotReady => Ok(ReceiveStatus::NotReady),
@@ -169,16 +178,13 @@ impl Future for PairedConnectionInner {
         self.poll_complete()?;
 
         // If there's something to receive, receive it...
-        let mut receiving = true;
-        while receiving {
-            receiving = match self.receive()? {
-                ReceiveStatus::NotReady => false,
-                ReceiveStatus::ReadyMore => true,
+        loop {
+            match self.receive()? {
+                ReceiveStatus::NotReady => return Ok(Async::NotReady),
+                ReceiveStatus::ReadyMore => (),
                 ReceiveStatus::ReadyFinished => return Ok(Async::Ready(())),
             }
         }
-
-        Ok(Async::NotReady)
     }
 }
 
@@ -221,7 +227,7 @@ impl PairedConnection {
     pub fn send<T: resp::FromResp + Send + 'static>(
         &self,
         msg: resp::RespValue,
-    ) -> impl Future<Item = T, Error = error::Error> + Send {
+    ) -> impl Future<Item = T, Error = error::Error> {
         match &msg {
             &resp::RespValue::Array(_) => (),
             _ => {
