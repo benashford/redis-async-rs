@@ -36,6 +36,6 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub fn connect(addr: &SocketAddr) -> impl Future<Item = RespConnection, Error = io::Error> + Send {
+pub fn connect(addr: &SocketAddr) -> impl Future<Item = RespConnection, Error = io::Error> {
     TcpStream::connect(addr).map(move |socket| socket.framed(resp::RespCodec))
 }

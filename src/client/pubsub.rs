@@ -211,7 +211,7 @@ pub struct PubsubConnection {
 /// Returns a future that resolves to a `PubsubConnection`.
 pub fn pubsub_connect(
     addr: &SocketAddr,
-) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
+) -> impl Future<Item = PubsubConnection, Error = error::Error> {
     connect(addr).map_err(|e| e.into()).map(|connection| {
         let (out_tx, out_rx) = mpsc::unbounded();
         let pubsub_connection_inner = Box::new(PubsubConnectionInner::new(connection, out_rx));

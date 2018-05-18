@@ -199,7 +199,7 @@ pub struct PairedConnection {
 /// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect(
     addr: &SocketAddr,
-) -> impl Future<Item = PairedConnection, Error = error::Error> + Send {
+) -> impl Future<Item = PairedConnection, Error = error::Error> {
     connect(addr).map_err(|e| e.into()).map(|connection| {
         let (out_tx, out_rx) = mpsc::unbounded();
         let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
@@ -224,14 +224,14 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T: resp::FromResp + Send + 'static>(
-        &self,
-        msg: resp::RespValue,
-    ) -> impl Future<Item = T, Error = error::Error> {
+    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Item = T, Error = error::Error>
+    where
+        T: resp::FromResp,
+    {
         match &msg {
             &resp::RespValue::Array(_) => (),
             _ => {
-                return Either::A(future::err(error::internal(
+                return Either::B(future::err(error::internal(
                     "Command must be a RespValue::Array",
                 )))
             }
@@ -242,7 +242,7 @@ impl PairedConnection {
             .unbounded_send((msg, tx))
             .expect("Cannot send message!");
 
-        Either::B(rx.then(|v| match v {
+        Either::A(rx.then(|v| match v {
             Ok(v) => future::result(T::from_resp(v)),
             Err(e) => future::err(e.into()),
         }))
