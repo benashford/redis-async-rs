@@ -15,6 +15,10 @@ The API is currently low-level and still subject to change.
 
 Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
+### Minimum rustc version
+
+Version 0.3 requires rustc 1.26.0 or higher.
+
 ## Other clients
 
 There are a number of pre-existing Redis clients for Rust, two of particular interest are:
