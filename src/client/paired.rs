@@ -12,15 +12,15 @@ use std::collections::VecDeque;
 use std::mem;
 use std::net::SocketAddr;
 
-use futures::{future, Async, AsyncSink, Future, Poll, Sink, Stream, sync::{mpsc, oneshot}};
+use futures::{
+    future, future::Either, sync::{mpsc, oneshot}, Async, AsyncSink, Future, Poll, Sink, Stream,
+};
 
 use tokio_executor::{DefaultExecutor, Executor};
 
+use super::connect::{connect, RespConnection};
 use error;
 use resp;
-use super::connect::{connect, RespConnection};
-
-type PairedConnectionBox = Box<Future<Item = PairedConnection, Error = error::Error> + Send>;
 
 enum SendStatus {
     Ok,
@@ -39,6 +39,7 @@ enum FlushStatus {
     Required,
 }
 
+#[derive(Debug)]
 enum ReceiveStatus {
     ReadyFinished,
     ReadyMore,
@@ -69,7 +70,8 @@ impl PairedConnectionInner {
     }
 
     fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self.connection
+        match self
+            .connection
             .start_send(msg)
             .map_err(|e| error!("Error sending message to connection: {}", e))?
         {
@@ -92,7 +94,8 @@ impl PairedConnectionInner {
             SendStatus::Full(ref mut msg_rf, true) => unsafe {
                 mem::replace(msg_rf, mem::uninitialized())
             },
-            SendStatus::Ok => match self.out_rx
+            SendStatus::Ok => match self
+                .out_rx
                 .poll()
                 .map_err(|_| error!("Error polling for messages to send"))?
             {
@@ -115,7 +118,8 @@ impl PairedConnectionInner {
         match self.flush_status {
             FlushStatus::Ok => (),
             FlushStatus::Required => {
-                match self.connection
+                match self
+                    .connection
                     .poll_complete()
                     .map_err(|e| error!("Error polling for completeness: {}", e))?
                 {
@@ -133,21 +137,26 @@ impl PairedConnectionInner {
     }
 
     fn receive(&mut self) -> Result<ReceiveStatus, ()> {
-        match self.connection
+        if let SendStatus::End = self.send_status {
+            if self.waiting.is_empty() {
+                return Ok(ReceiveStatus::ReadyFinished);
+            }
+        }
+        match self
+            .connection
             .poll()
             .map_err(|e| error!("Error polling to receive messages: {}", e))?
         {
-            Async::Ready(None) => Ok(ReceiveStatus::ReadyFinished),
+            Async::Ready(None) => {
+                error!("Connection to Redis closed unexpectedly");
+                Err(())
+            }
             Async::Ready(Some(msg)) => {
-                let tx = self.waiting
-                    .pop_front()
-                    .expect(&format!("Received unexpected message: {:?}", msg));
+                let tx = match self.waiting.pop_front() {
+                    Some(tx) => tx,
+                    None => panic!("Received unexpected message: {:?}", msg),
+                };
                 let _ = tx.send(msg);
-                if let SendStatus::End = self.send_status {
-                    if self.waiting.is_empty() {
-                        return Ok(ReceiveStatus::ReadyFinished);
-                    }
-                }
                 Ok(ReceiveStatus::ReadyMore)
             }
             Async::NotReady => Ok(ReceiveStatus::NotReady),
@@ -169,16 +178,13 @@ impl Future for PairedConnectionInner {
         self.poll_complete()?;
 
         // If there's something to receive, receive it...
-        let mut receiving = true;
-        while receiving {
-            receiving = match self.receive()? {
-                ReceiveStatus::NotReady => false,
-                ReceiveStatus::ReadyMore => true,
+        loop {
+            match self.receive()? {
+                ReceiveStatus::NotReady => return Ok(Async::NotReady),
+                ReceiveStatus::ReadyMore => (),
                 ReceiveStatus::ReadyFinished => return Ok(Async::Ready(())),
             }
         }
-
-        Ok(Async::NotReady)
     }
 }
 
@@ -191,8 +197,10 @@ pub struct PairedConnection {
 /// The default starting point to use most default Redis functionality.
 ///
 /// Returns a future that resolves to a `PairedConnection`.
-pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
-    let pc_f = connect(addr).map_err(|e| e.into()).map(|connection| {
+pub fn paired_connect(
+    addr: &SocketAddr,
+) -> impl Future<Item = PairedConnection, Error = error::Error> {
+    connect(addr).map_err(|e| e.into()).map(|connection| {
         let (out_tx, out_rx) = mpsc::unbounded();
         let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
         let mut executor = DefaultExecutor::current();
@@ -200,23 +208,7 @@ pub fn paired_connect(addr: &SocketAddr) -> PairedConnectionBox {
             .spawn(paired_connection_inner)
             .expect("Cannot spawn paired connection");
         PairedConnection { out_tx }
-    });
-
-    Box::new(pc_f)
-}
-
-pub type SendBox<T> = Box<Future<Item = T, Error = error::Error> + Send>;
-
-/// Fire-and-forget, used to force the return type of a `send` command where the result is not required
-/// to satisfy the generic return type.
-///
-#[macro_export]
-macro_rules! faf {
-    ($e: expr) => {{
-        use $crate::client::paired::SendBox;
-        use $crate::resp;
-        let _: SendBox<resp::RespValue> = $e;
-    }};
+    })
 }
 
 impl PairedConnection {
@@ -232,11 +224,14 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T: resp::FromResp + Send + 'static>(&self, msg: resp::RespValue) -> SendBox<T> {
+    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Item = T, Error = error::Error>
+    where
+        T: resp::FromResp,
+    {
         match &msg {
             &resp::RespValue::Array(_) => (),
             _ => {
-                return Box::new(future::err(error::internal(
+                return Either::B(future::err(error::internal(
                     "Command must be a RespValue::Array",
                 )))
             }
@@ -247,10 +242,13 @@ impl PairedConnection {
             .unbounded_send((msg, tx))
             .expect("Cannot send message!");
 
-        let future = rx.then(|v| match v {
+        Either::A(rx.then(|v| match v {
             Ok(v) => future::result(T::from_resp(v)),
             Err(e) => future::err(e.into()),
-        });
-        Box::new(future)
+        }))
+    }
+
+    pub fn send_and_forget(&self, msg: resp::RespValue) {
+        let _ = self.send::<resp::RespValue>(msg);
     }
 }

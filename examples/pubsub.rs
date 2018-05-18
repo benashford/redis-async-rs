@@ -14,8 +14,7 @@ extern crate tokio;
 
 use std::env;
 
-use futures::{Future, Stream};
-use futures::future;
+use futures::{future, Future, Stream};
 
 use redis_async::client;
 use redis_async::resp::FromResp;
@@ -29,7 +28,7 @@ fn main() {
         .unwrap();
 
     let msgs =
-        client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(topic));
+        client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(&topic));
     let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
         msgs.for_each(|message| {
             println!("{}", String::from_resp(message).unwrap());

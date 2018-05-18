@@ -15,6 +15,10 @@ The API is currently low-level and still subject to change.
 
 Initially I'm focussing on single-server Redis instances, another long-term goal is to support Redis clusters.  This would make the implementation more complex as it requires routing, and handling error conditions such as `MOVED`.
 
+### Minimum rustc version
+
+Version 0.3 requires rustc 1.26.0 or higher.
+
 ## Other clients
 
 There are a number of pre-existing Redis clients for Rust, two of particular interest are:
@@ -104,8 +108,8 @@ In most cases the difference is small.
 
 | Benchmark        | redis-rs (the control)                                            | redis-async-rs  |
 | ---------------- | ----------------------------------------------------------------- | --------------- |
-| simple_getsetdel | 139,293 ns/iter (not pipelined)<br>54,216 ns/iter (pipelined)     | 136,435 ns/iter |
-| complex          | 9,909,434 ns/iter (non pipelined)<br>539,767 ns/iter (pipelined)  | 718,678 ns/iter |
+| simple_getsetdel | 131,107 ns/iter (not pipelined)<br>53,826 ns/iter (pipelined)     | 113,738 ns/iter |
+| complex          | 9,286,682 ns/iter (non pipelined)<br>565,834 ns/iter (pipelined)  | 610,752 ns/iter |
 
 For `redis-rs` each benchmark has a pipelined and a non-pipelined version.  For `redis-async-rs` there is only one version as pipelining is handled implicitely.
 
