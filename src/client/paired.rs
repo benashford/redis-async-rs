@@ -200,14 +200,18 @@ pub struct PairedConnection {
 pub fn paired_connect(
     addr: &SocketAddr,
 ) -> impl Future<Item = PairedConnection, Error = error::Error> {
-    connect(addr).map_err(|e| e.into()).map(|connection| {
+    connect(addr).map_err(|e| e.into()).and_then(|connection| {
         let (out_tx, out_rx) = mpsc::unbounded();
         let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
         let mut executor = DefaultExecutor::current();
-        executor
-            .spawn(paired_connection_inner)
-            .expect("Cannot spawn paired connection");
-        PairedConnection { out_tx }
+
+        if let Err(e) = executor.spawn(paired_connection_inner) {
+            return Err(error::Error::Internal(format!(
+                "Cannot spawn paired connection: {:?}",
+                e
+            )));
+        }
+        Ok(PairedConnection { out_tx })
     })
 }
 
@@ -238,9 +242,10 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        self.out_tx
-            .unbounded_send((msg, tx))
-            .expect("Cannot send message!");
+        if let Err(_e) = self.out_tx.unbounded_send((msg, tx)) {
+            // receiving end of a channel droppped
+            return Either::B(future::err(error::Error::EndOfStream));
+        }
 
         Either::A(rx.then(|v| match v {
             Ok(v) => future::result(T::from_resp(v)),
