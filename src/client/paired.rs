@@ -9,12 +9,17 @@
  */
 
 use std::collections::VecDeque;
-use std::mem;
 use std::net::SocketAddr;
 
-use futures::{
-    future, future::Either, sync::{mpsc, oneshot}, Async, AsyncSink, Future, Poll, Sink, Stream,
-};
+use futures::{future,
+              future::Either,
+              sync::{mpsc, oneshot},
+              Async,
+              AsyncSink,
+              Future,
+              Poll,
+              Sink,
+              Stream};
 
 use tokio_executor::{DefaultExecutor, Executor};
 
@@ -25,18 +30,7 @@ use resp;
 enum SendStatus {
     Ok,
     End,
-    Full(resp::RespValue, bool),
-}
-
-impl SendStatus {
-    fn full(msg: resp::RespValue) -> Self {
-        SendStatus::Full(msg, false)
-    }
-}
-
-enum FlushStatus {
-    Ok,
-    Required,
+    Full(resp::RespValue),
 }
 
 #[derive(Debug)]
@@ -52,7 +46,6 @@ struct PairedConnectionInner {
     waiting: VecDeque<oneshot::Sender<resp::RespValue>>,
 
     send_status: SendStatus,
-    flush_status: FlushStatus,
 }
 
 impl PairedConnectionInner {
@@ -65,37 +58,36 @@ impl PairedConnectionInner {
             out_rx: out_rx,
             waiting: VecDeque::new(),
             send_status: SendStatus::Ok,
-            flush_status: FlushStatus::Ok,
         }
     }
 
     fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self
-            .connection
+        match self.connection
             .start_send(msg)
             .map_err(|e| error!("Error sending message to connection: {}", e))?
         {
             AsyncSink::Ready => {
                 self.send_status = SendStatus::Ok;
-                self.flush_status = FlushStatus::Required;
                 Ok(true)
             }
             AsyncSink::NotReady(msg) => {
-                self.send_status = SendStatus::full(msg);
-                self.flush_status = FlushStatus::Required;
+                self.send_status = SendStatus::Full(msg);
                 Ok(false)
             }
         }
     }
 
     fn poll_start_send(&mut self) -> Result<bool, ()> {
-        let message = match self.send_status {
-            SendStatus::End | SendStatus::Full(_, false) => return Ok(false),
-            SendStatus::Full(ref mut msg_rf, true) => unsafe {
-                mem::replace(msg_rf, mem::uninitialized())
-            },
-            SendStatus::Ok => match self
-                .out_rx
+        let mut status = SendStatus::Ok;
+        ::std::mem::swap(&mut status, &mut self.send_status);
+
+        let message = match status {
+            SendStatus::End => {
+                self.send_status = SendStatus::End;
+                return Ok(false);
+            }
+            SendStatus::Full(msg) => msg,
+            SendStatus::Ok => match self.out_rx
                 .poll()
                 .map_err(|_| error!("Error polling for messages to send"))?
             {
@@ -115,24 +107,9 @@ impl PairedConnectionInner {
     }
 
     fn poll_complete(&mut self) -> Result<(), ()> {
-        match self.flush_status {
-            FlushStatus::Ok => (),
-            FlushStatus::Required => {
-                match self
-                    .connection
-                    .poll_complete()
-                    .map_err(|e| error!("Error polling for completeness: {}", e))?
-                {
-                    Async::Ready(()) => self.flush_status = FlushStatus::Ok,
-                    Async::NotReady => (),
-                }
-                if let SendStatus::Full(_, ref mut post) = self.send_status {
-                    if *post == false {
-                        *post = true;
-                    }
-                }
-            }
-        }
+        self.connection
+            .poll_complete()
+            .map_err(|e| error!("Error polling for completeness: {}", e))?;
         Ok(())
     }
 
@@ -142,8 +119,7 @@ impl PairedConnectionInner {
                 return Ok(ReceiveStatus::ReadyFinished);
             }
         }
-        match self
-            .connection
+        match self.connection
             .poll()
             .map_err(|e| error!("Error polling to receive messages: {}", e))?
         {
