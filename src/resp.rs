@@ -294,16 +294,21 @@ pub trait ToRespInteger {
 
 macro_rules! integer_into_resp {
     ($t:ty) => {
+        impl ToRespInteger for $t {
+            fn to_resp_integer(self) -> RespValue {
+                RespValue::Integer(self as i64)
+            }
+        }
         into_resp!($t, to_resp_integer);
+    };
+    ($($t:ty),*) => {
+        $(
+            integer_into_resp!($t);
+        )*
     }
 }
 
-impl ToRespInteger for usize {
-    fn to_resp_integer(self) -> RespValue {
-        RespValue::Integer(self as i64)
-    }
-}
-integer_into_resp!(usize);
+integer_into_resp!(i8, i32, i64, u8, u32, isize, usize);
 
 /// Codec to read frames
 pub struct RespCodec;
