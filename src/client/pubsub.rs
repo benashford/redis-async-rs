@@ -12,15 +12,18 @@ use std::collections::{hash_map::Entry, HashMap};
 use std::net::SocketAddr;
 
 use futures::{
-    stream::Fuse, sync::{mpsc, oneshot}, Async, AsyncSink, Future, Poll, Sink, Stream,
+    future,
+    stream::Fuse,
+    sync::{mpsc, oneshot},
+    Async, AsyncSink, Future, Poll, Sink, Stream,
 };
 
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
 use error;
-use resp;
-use resp::FromResp;
+use reconnect::{reconnect, Reconnect};
+use resp::{self, FromResp};
 
 #[derive(Debug)]
 enum PubsubEvent {
@@ -203,7 +206,8 @@ impl Future for PubsubConnectionInner {
 /// A shareable reference to subscribe to PUBSUB topics
 #[derive(Clone)]
 pub struct PubsubConnection {
-    out_tx: mpsc::UnboundedSender<PubsubEvent>,
+    out_tx_c:
+        Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>, error::Error, error::Error>,
 }
 
 /// Used for Redis's PUBSUB functionality.
@@ -211,15 +215,31 @@ pub struct PubsubConnection {
 /// Returns a future that resolves to a `PubsubConnection`.
 pub fn pubsub_connect(
     addr: &SocketAddr,
-) -> impl Future<Item = PubsubConnection, Error = error::Error> {
-    connect(addr).map_err(|e| e.into()).map(|connection| {
-        let (out_tx, out_rx) = mpsc::unbounded();
-        let pubsub_connection_inner = Box::new(PubsubConnectionInner::new(connection, out_rx));
-        let mut default_executor = DefaultExecutor::current();
-        default_executor
-            .spawn(pubsub_connection_inner)
-            .expect("Cannot spawn pubsub connection");
-        PubsubConnection { out_tx }
+) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
+    let addr = addr.clone();
+    future::lazy(move || {
+        let out_tx_c = reconnect(
+            |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
+                Box::new(future::result(con.unbounded_send(act)).map_err(|e| e.into()))
+            },
+            move || {
+                let con_f = connect(&addr).map_err(|e| e.into()).and_then(|connection| {
+                    let (out_tx, out_rx) = mpsc::unbounded();
+                    let pubsub_connection_inner =
+                        Box::new(PubsubConnectionInner::new(connection, out_rx));
+                    let mut default_executor = DefaultExecutor::current();
+                    match default_executor.spawn(pubsub_connection_inner) {
+                        Ok(_) => Ok(out_tx),
+                        Err(e) => Err(error::Error::Internal(format!(
+                            "Cannot spawn a pubsub connection: {:?}",
+                            e
+                        ))),
+                    }
+                });
+                Box::new(con_f)
+            },
+        );
+        Ok(PubsubConnection { out_tx_c })
     })
 }
 
@@ -231,22 +251,25 @@ impl PubsubConnection {
     pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
-        self.out_tx
-            .unbounded_send(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))
-            .expect("Cannot queue subscription request");
+        let do_work_f = self
+            .out_tx_c
+            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))
+            .map_err(|_| error::Error::EndOfStream);
 
         let stream = PubsubStream {
             topic: topic.to_owned(),
             underlying: rx,
             con: self.clone(),
         };
-        signal_r.map(|_| stream).map_err(|e| e.into())
+        do_work_f.and_then(|()| signal_r.map(|_| stream).map_err(|e| e.into()))
     }
 
     pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
-        self.out_tx
-            .unbounded_send(PubsubEvent::Unsubscribe(topic.into()))
-            .expect("Cannot queue unsubscription request");
+        // Ignoring any results, as any errors communicating with Redis would de-facto unsubscribe
+        // anyway, and would be reported/logged elsewhere
+        let _ = self
+            .out_tx_c
+            .do_work(PubsubEvent::Unsubscribe(topic.into()));
     }
 }
 
