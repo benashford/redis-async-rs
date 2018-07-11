@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Ben Ashford
+ * Copyright 2017-2018 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -233,13 +233,13 @@ macro_rules! resp_array {
 }
 
 macro_rules! into_resp {
-    ($t:ty,$f:ident) => {
+    ($t:ty, $f:ident) => {
         impl<'a> From<$t> for RespValue {
             fn from(from: $t) -> RespValue {
                 from.$f()
             }
         }
-    }
+    };
 }
 
 /// A specific trait to convert into a `RespValue::BulkString`
@@ -250,7 +250,7 @@ pub trait ToRespString {
 macro_rules! string_into_resp {
     ($t:ty) => {
         into_resp!($t, to_resp_string);
-    }
+    };
 }
 
 impl ToRespString for String {
@@ -295,7 +295,7 @@ pub trait ToRespInteger {
 macro_rules! integer_into_resp {
     ($t:ty) => {
         into_resp!($t, to_resp_integer);
-    }
+    };
 }
 
 impl ToRespInteger for usize {
