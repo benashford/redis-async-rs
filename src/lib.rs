@@ -71,3 +71,5 @@ pub mod resp;
 pub mod client;
 
 pub mod error;
+
+pub mod reconnect;

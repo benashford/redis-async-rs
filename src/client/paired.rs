@@ -11,20 +11,18 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 
-use futures::{future,
-              future::Either,
-              sync::{mpsc, oneshot},
-              Async,
-              AsyncSink,
-              Future,
-              Poll,
-              Sink,
-              Stream};
+use futures::{
+    future,
+    future::Either,
+    sync::{mpsc, oneshot},
+    Async, AsyncSink, Future, Poll, Sink, Stream,
+};
 
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
 use error;
+use reconnect::{reconnect, Reconnect};
 use resp;
 
 enum SendStatus {
@@ -62,7 +60,8 @@ impl PairedConnectionInner {
     }
 
     fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self.connection
+        match self
+            .connection
             .start_send(msg)
             .map_err(|e| error!("Error sending message to connection: {}", e))?
         {
@@ -87,7 +86,8 @@ impl PairedConnectionInner {
                 return Ok(false);
             }
             SendStatus::Full(msg) => msg,
-            SendStatus::Ok => match self.out_rx
+            SendStatus::Ok => match self
+                .out_rx
                 .poll()
                 .map_err(|_| error!("Error polling for messages to send"))?
             {
@@ -119,7 +119,8 @@ impl PairedConnectionInner {
                 return Ok(ReceiveStatus::ReadyFinished);
             }
         }
-        match self.connection
+        match self
+            .connection
             .poll()
             .map_err(|e| error!("Error polling to receive messages: {}", e))?
         {
@@ -164,10 +165,13 @@ impl Future for PairedConnectionInner {
     }
 }
 
+type SendPayload = (resp::RespValue, oneshot::Sender<resp::RespValue>);
+
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Clone)]
 pub struct PairedConnection {
-    out_tx: mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+    out_tx_c:
+        Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>, error::Error, error::Error>,
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -175,19 +179,42 @@ pub struct PairedConnection {
 /// Returns a future that resolves to a `PairedConnection`.
 pub fn paired_connect(
     addr: &SocketAddr,
-) -> impl Future<Item = PairedConnection, Error = error::Error> {
-    connect(addr).map_err(|e| e.into()).and_then(|connection| {
-        let (out_tx, out_rx) = mpsc::unbounded();
-        let paired_connection_inner = Box::new(PairedConnectionInner::new(connection, out_rx));
-        let mut executor = DefaultExecutor::current();
+) -> impl Future<Item = PairedConnection, Error = error::Error> + Send {
+    // NOTE - the lazy here isn't strictly necessary, but to avoid two potential problems, both
+    // related to backward compatibility.
+    //
+    // 1. It keeps the signature of this function the same, so this change doesn't require a new
+    // major version.  Although we might use a new major version anyway as the internal behaviour
+    // is different enough to warrant it.
+    //
+    // 2. It ensures that a Tokio executor runs the future.  This function would work correctly
+    // without it, if we could be sure this function was only called by other futures that were
+    // executed within the Tokio executor, but we cannot guarantee that.
+    let addr = addr.clone();
+    future::lazy(move || {
+        let out_tx_c = reconnect(
+            |con: &mpsc::UnboundedSender<SendPayload>, act| {
+                Box::new(future::result(con.unbounded_send(act)).map_err(|e| e.into()))
+            },
+            move || {
+                let con_f = connect(&addr).map_err(|e| e.into()).and_then(|connection| {
+                    let (out_tx, out_rx) = mpsc::unbounded();
+                    let paired_connection_inner =
+                        Box::new(PairedConnectionInner::new(connection, out_rx));
+                    let mut executor = DefaultExecutor::current();
 
-        if let Err(e) = executor.spawn(paired_connection_inner) {
-            return Err(error::Error::Internal(format!(
-                "Cannot spawn paired connection: {:?}",
-                e
-            )));
-        }
-        Ok(PairedConnection { out_tx })
+                    match executor.spawn(paired_connection_inner) {
+                        Ok(_) => Ok(out_tx),
+                        Err(e) => Err(error::Error::Internal(format!(
+                            "Cannot spawn paired connection: {:?}",
+                            e
+                        ))),
+                    }
+                });
+                Box::new(con_f)
+            },
+        );
+        Ok(PairedConnection { out_tx_c })
     })
 }
 
@@ -218,15 +245,27 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        if let Err(_e) = self.out_tx.unbounded_send((msg, tx)) {
-            // receiving end of a channel droppped
-            return Either::B(future::err(error::Error::EndOfStream));
-        }
+        let send_f = self
+            .out_tx_c
+            .do_work((msg, tx))
+            .map_err(|_| error::Error::EndOfStream);
 
-        Either::A(rx.then(|v| match v {
-            Ok(v) => future::result(T::from_resp(v)),
-            Err(e) => future::err(e.into()),
+        Either::A(send_f.and_then(|_| {
+            rx.then(|v| match v {
+                Ok(v) => future::result(T::from_resp(v)),
+                Err(e) => future::err(e.into()),
+            })
         }))
+
+        // if let Err(_e) = self.out_tx.unbounded_send((msg, tx)) {
+        //     // receiving end of a channel droppped
+        //     return Either::B(future::err(error::Error::EndOfStream));
+        // }
+
+        // Either::A(rx.then(|v| match v {
+        //     Ok(v) => future::result(T::from_resp(v)),
+        //     Err(e) => future::err(e.into()),
+        // }))
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
