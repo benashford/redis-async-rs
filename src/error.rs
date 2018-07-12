@@ -30,7 +30,7 @@ pub enum Error {
     /// A remote error
     Remote(String),
 
-    /// End of stream - not necesserially an error if you're anticipating it
+    /// End of stream - a connection is broken, or could not be established in the first place
     EndOfStream,
 
     /// An unexpected error.  In this context "unexpected" means

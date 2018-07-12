@@ -9,26 +9,35 @@
  */
 
 use std::error as std_error;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
-use futures::{future::Either, sync::oneshot, Future};
+use futures::{
+    future::{self, Either},
+    sync::oneshot,
+    Future,
+};
 
 use tokio_executor::{DefaultExecutor, Executor};
+use tokio_timer::Deadline;
 
 #[derive(Debug)]
 pub(crate) enum ReconnectError {
     ConnectionDropped,
-    ConnectionFailed,
+    NotConnected,
 }
 
 pub(crate) struct Reconnect<A, T, RE, CE> {
-    state: Arc<RwLock<ReconnectState<T, A>>>,
+    state: Arc<RwLock<ReconnectState<T>>>,
 
     work_fn: Arc<Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync>,
     conn_fn: Arc<Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync>,
 }
 
-pub(crate) fn reconnect<A, T, RE, CE, W, C>(w: W, c: C) -> Reconnect<A, T, RE, CE>
+pub(crate) fn reconnect<A, T, RE, CE, W, C>(
+    w: W,
+    c: C,
+) -> impl Future<Item = Reconnect<A, T, RE, CE>, Error = ()>
 where
     A: Send + 'static,
     W: Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync + 'static,
@@ -38,24 +47,18 @@ where
     CE: std_error::Error + 'static,
 {
     let r = Reconnect {
-        state: Arc::new(RwLock::new(ReconnectState::Initialising)),
+        state: Arc::new(RwLock::new(ReconnectState::NotConnected)),
 
         work_fn: Arc::new(w),
         conn_fn: Arc::new(c),
     };
-    r.reconnect();
-    r
+    r.reconnect().map(|()| r)
 }
 
-struct PendingAction<A> {
-    result_c: oneshot::Sender<Box<Future<Item = (), Error = ReconnectError> + Send>>,
-    action: A,
-}
-
-enum ReconnectState<T, A> {
-    Initialising,
-    Good(T),
-    Pending(Mutex<Vec<PendingAction<A>>>),
+enum ReconnectState<T> {
+    NotConnected,
+    Connected(T),
+    Connecting,
 }
 
 use self::ReconnectState::*;
@@ -77,85 +80,77 @@ where
     }
 
     pub(crate) fn do_work(&self, a: A) -> impl Future<Item = (), Error = ReconnectError> {
-        let state = self.state.read().expect("Cannot obtain read lock");
-        match *state {
-            Initialising => panic!("Invalid state, this should be an impossible condition as `do_work` can only be called after `reconnect`"),
-            Good(ref t) => Either::A(self.call_work(t, a)),
-            Pending(ref pending) => {
-                let mut pending = pending.lock().expect("Cannot lock pending");
-                let (tx, rx) = oneshot::channel();
-
-                pending.push(PendingAction {
-                    result_c: tx,
-                    action: a,
-                });
-
-                let r = rx.map_err(|_| ReconnectError::ConnectionFailed).and_then(|o| {
-                    o
-                });
-                
-                Either::B(r)
+        let (attempt_reload, fut) = {
+            let state = self.state.read().expect("Cannot obtain read lock");
+            match *state {
+                NotConnected => (true, Either::B(future::err(ReconnectError::NotConnected))),
+                Connected(ref t) => (false, Either::A(self.call_work(t, a))),
+                Connecting => (false, Either::B(future::err(ReconnectError::NotConnected))),
             }
+        };
+        if attempt_reload {
+            self.reconnect();
         }
+        fut
     }
 
-    pub(crate) fn reconnect(&self) {
+    /// Returns a future that completes when the connection is established or failed to establish
+    /// used only for timing.
+    fn reconnect(&self) -> impl Future<Item = (), Error = ()> {
         let mut state = self.state.write().expect("Cannot obtain write lock");
-        if state.is_pending() {
-            warn!("Trying to reconnect when already reconnecting");
-            return;
+        match *state {
+            Connected(_) => {
+                debug!("Already connected, will not attempt to reconnect");
+                return Either::B(future::err(()));
+            }
+            Connecting => {
+                debug!("Already attempting to connect, will not attempt again");
+                return Either::B(future::err(()));
+            }
+            _ => (),
         }
-        *state = ReconnectState::Pending(Mutex::new(Vec::new()));
+        *state = ReconnectState::Connecting;
 
         let reconnect = self.clone();
         let connect_f = (self.conn_fn)();
 
-        let connect_f = connect_f.then(move |t| {
+        let (tx, rx) = oneshot::channel();
+
+        let deadline = Instant::now() + Duration::from_secs(30); // TODO - review and make configurable
+
+        let connect_f = Deadline::new(connect_f, deadline).then(move |t| {
             let mut state = reconnect.state.write().expect("Cannot obtain write lock");
-            match *state {
-                Initialising => panic!("Invalid state, this should be Pending"),
-                Good(_) => {
-                    return Ok(match t {
-                        Ok(_) => warn!("Attempting to reset a state to good that is already good, dropping new connection instead"),
-                        Err(e) => error!("Cannot create a new connection, but connection is good anyway due to another connection: {}", e),
-                    })
-                }
-                Pending(ref pending) => {
-                    match t {
-                        Ok(ref t) => {
-                            let mut pending = pending.lock().expect("Cannot obtain lock");
-                            for PendingAction { result_c, action } in pending.drain(..) {
-                                let _ = result_c.send(Box::new(reconnect.call_work(&t, action)));
-                            }
-                        },
-                        Err(ref e) => error!("Cannot create a new connection, pending requests will be rejected, subsequent requests will initialise a new connection: {}", e),
+            let result = match *state {
+                NotConnected | Connecting => match t {
+                    Ok(t) => {
+                        info!("Connection established");
+                        *state = Connected(t);
+                        Ok(())
                     }
+                    Err(e) => {
+                        match e.into_inner() {
+                            Some(e) => error!("Connection failed: {}", e),
+                            None => error!("Connection timed-out"),
+                        }
+                        *state = NotConnected;
+                        Err(())
+                    }
+                },
+                Connected(_) => {
+                    error!("Already connected, discarding new connection");
+                    Err(())
                 }
-            }
-            match t {
-                Ok(t) => {
-                    *state = ReconnectState::Good(t);
-                    Ok(())
-                }
-                Err(_) => Err(()),
-            }
+            };
+            let _ = tx.send(result);
+            Ok(())
         });
 
         let mut executor = DefaultExecutor::current();
-
         executor
             .spawn(Box::new(connect_f))
             .expect("Cannot spawn future");
-    }
-}
 
-impl<T, A> ReconnectState<T, A> {
-    fn is_pending(&self) -> bool {
-        match self {
-            Initialising => false,
-            Good(_) => false,
-            Pending(_) => true,
-        }
+        Either::A(rx.map_err(|_| ()).and_then(future::result))
     }
 }
 

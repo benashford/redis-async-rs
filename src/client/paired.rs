@@ -180,19 +180,14 @@ pub struct PairedConnection {
 pub fn paired_connect(
     addr: &SocketAddr,
 ) -> impl Future<Item = PairedConnection, Error = error::Error> + Send {
-    // NOTE - the lazy here isn't strictly necessary, but to avoid two potential problems, both
-    // related to backward compatibility.
+    // NOTE - the lazy here isn't strictly necessary.
     //
-    // 1. It keeps the signature of this function the same, so this change doesn't require a new
-    // major version.  Although we might use a new major version anyway as the internal behaviour
-    // is different enough to warrant it.
-    //
-    // 2. It ensures that a Tokio executor runs the future.  This function would work correctly
+    // It ensures that a Tokio executor runs the future.  This function would work correctly
     // without it, if we could be sure this function was only called by other futures that were
     // executed within the Tokio executor, but we cannot guarantee that.
     let addr = addr.clone();
     future::lazy(move || {
-        let out_tx_c = reconnect(
+        reconnect(
             |con: &mpsc::UnboundedSender<SendPayload>, act| {
                 Box::new(future::result(con.unbounded_send(act)).map_err(|e| e.into()))
             },
@@ -213,9 +208,9 @@ pub fn paired_connect(
                 });
                 Box::new(con_f)
             },
-        );
-        Ok(PairedConnection { out_tx_c })
-    })
+        )
+    }).map(|out_tx_c| PairedConnection { out_tx_c })
+        .map_err(|()| error::Error::EndOfStream)
 }
 
 impl PairedConnection {

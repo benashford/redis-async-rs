@@ -15,6 +15,7 @@ log = "0.4.1"
 tokio-executor = "0.1"
 tokio-tcp = "0.1"
 tokio-io = "0.1.6"
+tokio-timer = "0.2.4"
 
 [dev-dependencies]
 tokio = "0.1.5"
