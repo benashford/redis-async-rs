@@ -144,7 +144,7 @@ where
         let mut executor = DefaultExecutor::current();
 
         executor
-            .spawn(Box::new(connect_f.map_err(|_| panic!("Error connecting"))))
+            .spawn(Box::new(connect_f))
             .expect("Cannot spawn future");
     }
 }
