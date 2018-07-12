@@ -74,9 +74,18 @@ where
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
             error!("Cannot perform action: {}", e);
-            reconnect.reconnect();
+            reconnect.disconnect();
             ReconnectError::ConnectionDropped
         })
+    }
+
+    // Called when a bad situation has been discovered, force the connections to re-connect.
+    fn disconnect(&self) {
+        {
+            let mut state = self.state.write().expect("Cannot obtain a write lock");
+            *state = NotConnected;
+        }
+        self.reconnect();
     }
 
     pub(crate) fn do_work(&self, a: A) -> impl Future<Item = (), Error = ReconnectError> {
