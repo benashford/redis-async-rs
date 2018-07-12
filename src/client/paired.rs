@@ -256,16 +256,6 @@ impl PairedConnection {
                 Err(e) => future::err(e.into()),
             })
         }))
-
-        // if let Err(_e) = self.out_tx.unbounded_send((msg, tx)) {
-        //     // receiving end of a channel droppped
-        //     return Either::B(future::err(error::Error::EndOfStream));
-        // }
-
-        // Either::A(rx.then(|v| match v {
-        //     Ok(v) => future::result(T::from_resp(v)),
-        //     Err(e) => future::err(e.into()),
-        // }))
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
