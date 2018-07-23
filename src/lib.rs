@@ -60,9 +60,11 @@ extern crate log;
 
 #[cfg(test)]
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_executor;
 extern crate tokio_io;
 extern crate tokio_tcp;
+extern crate tokio_timer;
 
 #[macro_use]
 pub mod resp;
@@ -71,3 +73,5 @@ pub mod resp;
 pub mod client;
 
 pub mod error;
+
+pub mod reconnect;

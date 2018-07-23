@@ -26,7 +26,8 @@ pub mod paired;
 pub mod pubsub;
 
 pub use self::{
-    connect::connect, paired::{paired_connect, PairedConnection},
+    connect::connect,
+    paired::{paired_connect, PairedConnection},
     pubsub::{pubsub_connect, PubsubConnection},
 };
 
