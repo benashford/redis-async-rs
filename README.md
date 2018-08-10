@@ -24,7 +24,7 @@ Version 0.3 requires rustc 1.26.0 or higher.
 There are a number of pre-existing Redis clients for Rust, two of particular interest are:
 
 * Tokio-Redis - https://github.com/tokio-rs/tokio-redis - written as a demo of Tokio, by Tokio developers
-* Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio (yet)
+* Redis-RS - https://github.com/mitsuhiko/redis-rs - the most popular, but uses blocking I/O and isn't compatible with Tokio (UPDATE: the latest release does have experimental asynchronous support)
 
 ## Usage
 
