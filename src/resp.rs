@@ -52,6 +52,21 @@ impl RespValue {
             x => Ok(x),
         }
     }
+
+    /// Convenience function for building dynamic Redis commands with variable numbers of
+    /// arguments, e.g. RPUSH
+    pub fn append<T>(&mut self, other: &mut Vec<T>)
+    where
+        T: Into<RespValue>,
+    {
+        match self {
+            RespValue::Array(ref mut vals) => {
+                let mut new_vals = other.drain(..).map(|t| t.into()).collect();
+                vals.append(&mut new_vals);
+            }
+            _ => warn!("Can only append to arrays"),
+        }
+    }
 }
 
 /// A trait to be implemented for every time which can be read from a RESP value.
