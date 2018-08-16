@@ -55,7 +55,7 @@ impl RespValue {
 
     /// Convenience function for building dynamic Redis commands with variable numbers of
     /// arguments, e.g. RPUSH
-    pub fn append<T>(&mut self, other: &mut Vec<T>)
+    pub fn append<T>(mut self, other: &mut Vec<T>) -> Self
     where
         T: Into<RespValue>,
     {
@@ -66,6 +66,7 @@ impl RespValue {
             }
             _ => warn!("Can only append to arrays"),
         }
+        self
     }
 }
 
