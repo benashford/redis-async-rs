@@ -119,9 +119,47 @@ impl FromResp for i64 {
     }
 }
 
-impl FromResp for usize {
-    fn from_resp_int(resp: RespValue) -> Result<usize, Error> {
-        i64::from_resp_int(resp).map(|x| x as usize)
+macro_rules! impl_fromresp_integers {
+    ($($int_ty:ident),* $(,)*) => {
+        $(
+            impl FromResp for $int_ty {
+                fn from_resp_int(resp: RespValue) -> Result<Self, Error> {
+                    i64::from_resp_int(resp).and_then(|x| {
+                        // $int_ty::max_value() as i64 > 0 should be optimized out. It tests if
+                        // the target integer type needs an "upper bounds" check
+                        if x < ($int_ty::min_value() as i64)
+                            || ($int_ty::max_value() as i64 > 0
+                                && x > ($int_ty::max_value() as i64))
+                        {
+                            Err(error::resp(
+                                concat!(
+                                    "i64 value cannot be represented as {}",
+                                    stringify!($int_ty),
+                                ),
+                                RespValue::Integer(x),
+                            ))
+                        } else {
+                            Ok(x as $int_ty)
+                        }
+                    })
+                }
+            }
+        )*
+    };
+}
+
+impl_fromresp_integers!(isize, usize, i32, u32, u64);
+
+impl FromResp for bool {
+    fn from_resp_int(resp: RespValue) -> Result<bool, Error> {
+        i64::from_resp_int(resp).and_then(|x| match x {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(error::resp(
+                "i64 value cannot be represented as bool",
+                RespValue::Integer(x),
+            )),
+        })
     }
 }
 
@@ -579,7 +617,7 @@ mod tests {
 
     use tokio_io::codec::{Decoder, Encoder};
 
-    use super::{RespCodec, RespValue};
+    use super::{FromResp, RespCodec, RespValue};
 
     #[test]
     fn test_bulk_string() {
@@ -616,5 +654,25 @@ mod tests {
         let mut codec = RespCodec;
         let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
         assert_eq!(deserialized, RespValue::Nil);
+    }
+
+    #[test]
+    fn test_integer_overflow() {
+        let resp_object = RespValue::Integer(i64::max_value());
+        let res = i32::from_resp(resp_object);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_integer_underflow() {
+        let resp_object = RespValue::Integer(-2);
+        let res = u64::from_resp(resp_object);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_integer_convesion() {
+        let resp_object = RespValue::Integer(50);
+        assert_eq!(u32::from_resp(resp_object).unwrap(), 50);
     }
 }
