@@ -129,12 +129,14 @@ impl PairedConnectionInner {
                 Err(())
             }
             Async::Ready(Some(msg)) => {
-                let tx = match self.waiting.pop_front() {
-                    Some(tx) => tx,
-                    None => panic!("Received unexpected message: {:?}", msg),
-                };
-                let _ = tx.send(msg);
-                Ok(ReceiveStatus::ReadyMore)
+                let tx = self.waiting.pop_front();
+                if let Some(tx) = tx {
+                    let _ = tx.send(msg);
+                    Ok(ReceiveStatus::ReadyMore)
+                } else {
+                    error!("Received unexpected message: {:?}", msg);
+                    Err(())
+                }
             }
             Async::NotReady => Ok(ReceiveStatus::NotReady),
         }
