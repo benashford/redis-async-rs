@@ -185,7 +185,7 @@ pub fn paired_connect(
     // It ensures that a Tokio executor runs the future.  This function would work correctly
     // without it, if we could be sure this function was only called by other futures that were
     // executed within the Tokio executor, but we cannot guarantee that.
-    let addr = addr.clone();
+    let addr = *addr;
     future::lazy(move || {
         reconnect(
             |con: &mpsc::UnboundedSender<SendPayload>, act| {
@@ -210,7 +210,7 @@ pub fn paired_connect(
             },
         )
     }).map(|out_tx_c| PairedConnection { out_tx_c })
-        .map_err(|()| error::Error::EndOfStream)
+    .map_err(|()| error::Error::EndOfStream)
 }
 
 impl PairedConnection {
@@ -231,7 +231,7 @@ impl PairedConnection {
         T: resp::FromResp,
     {
         match &msg {
-            &resp::RespValue::Array(_) => (),
+            resp::RespValue::Array(_) => (),
             _ => {
                 return Either::B(future::err(error::internal(
                     "Command must be a RespValue::Array",

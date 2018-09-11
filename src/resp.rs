@@ -46,7 +46,7 @@ pub enum RespValue {
 }
 
 impl RespValue {
-    fn to_result(self) -> Result<RespValue, Error> {
+    fn into_result(self) -> Result<RespValue, Error> {
         match self {
             RespValue::Error(string) => Err(Error::Remote(string)),
             x => Ok(x),
@@ -78,7 +78,7 @@ pub trait FromResp: Sized {
     /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
     /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
     fn from_resp(resp: RespValue) -> Result<Self, Error> {
-        Self::from_resp_int(resp.to_result()?)
+        Self::from_resp_int(resp.into_result()?)
     }
 
     fn from_resp_int(resp: RespValue) -> Result<Self, Error>;
@@ -442,7 +442,7 @@ fn parse_error(message: String) -> Error {
 /// two bytes will not be returned)
 ///
 /// TODO - rename this function potentially, it's used for simple integers too
-fn scan_integer<'a>(buf: &'a mut BytesMut, idx: usize) -> Result<Option<(usize, &'a [u8])>, Error> {
+fn scan_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, &[u8])>, Error> {
     let length = buf.len();
     let mut at_end = false;
     let mut pos = idx;
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_bulk_string() {
-        let resp_object = RespValue::BulkString("THISISATEST".as_bytes().to_vec());
+        let resp_object = RespValue::BulkString(b"THISISATEST".to_vec());
         let mut bytes = BytesMut::new();
         let mut codec = RespCodec;
         codec.encode(resp_object.clone(), &mut bytes).unwrap();

@@ -216,7 +216,7 @@ pub struct PubsubConnection {
 pub fn pubsub_connect(
     addr: &SocketAddr,
 ) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
-    let addr = addr.clone();
+    let addr = *addr;
     future::lazy(move || {
         reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
@@ -240,7 +240,7 @@ pub fn pubsub_connect(
             },
         )
     }).map(|out_tx_c| PubsubConnection { out_tx_c })
-        .map_err(|()| error::Error::EndOfStream)
+    .map_err(|()| error::Error::EndOfStream)
 }
 
 impl PubsubConnection {

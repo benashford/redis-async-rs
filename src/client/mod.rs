@@ -64,8 +64,7 @@ mod test {
                 connection
                     .send(resp_array!["PING", "TEST"])
                     .map_err(|e| e.into())
-            })
-            .and_then(|connection| connection.take(1).collect());
+            }).and_then(|connection| connection.take(1).collect());
 
         let values = run_and_wait(connection).unwrap();
 
@@ -89,12 +88,11 @@ mod test {
                     .send_all(stream::iter_ok::<_, io::Error>(ops))
                     .map(|(sender, _)| sender)
                     .map_err(|e| e.into())
-            })
-            .and_then(|connection| connection.skip(1001).take(1).collect());
+            }).and_then(|connection| connection.skip(1001).take(1).collect());
         let values = run_and_wait(connection).unwrap();
         assert_eq!(values.len(), 1);
         let values = match &values[0] {
-            &resp::RespValue::Array(ref values) => values.clone(),
+            resp::RespValue::Array(ref values) => values.clone(),
             _ => panic!("Not an array"),
         };
         assert_eq!(values.len(), 1000);

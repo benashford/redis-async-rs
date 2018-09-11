@@ -10,7 +10,7 @@
 
 use std::error as std_error;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::{
     future::{self, Either},
@@ -19,7 +19,7 @@ use futures::{
 };
 
 use tokio_executor::{DefaultExecutor, Executor};
-use tokio_timer::Deadline;
+use tokio_timer::Timeout;
 
 #[derive(Debug)]
 pub(crate) enum ReconnectError {
@@ -125,9 +125,7 @@ where
 
         let (tx, rx) = oneshot::channel();
 
-        let deadline = Instant::now() + Duration::from_secs(30); // TODO - review and make configurable
-
-        let connect_f = Deadline::new(connect_f, deadline).then(move |t| {
+        let connect_f = Timeout::new(connect_f, Duration::from_secs(30)).then(move |t| {
             let mut state = reconnect.state.write().expect("Cannot obtain write lock");
             let result = match *state {
                 NotConnected | Connecting => match t {
