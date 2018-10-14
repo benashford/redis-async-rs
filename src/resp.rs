@@ -10,8 +10,8 @@
 
 //! An implementation of the RESP protocol
 
-use std::hash::Hash;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::io;
 use std::str;
 
@@ -201,8 +201,16 @@ impl<K: FromResp + Hash + Eq, T: FromResp> FromResp for HashMap<K, T> {
                         break;
                     }
 
-                    let key = K::from_resp(items.next().ok_or(error::resp("Cannot be converted into a hashmap", "".into()))?)?;
-                    let value = T::from_resp(items.next().ok_or(error::resp("Cannot be converted into a hashmap", "".into()))?)?;
+                    let key = K::from_resp(
+                        items
+                            .next()
+                            .ok_or(error::resp("Cannot be converted into a hashmap", "".into()))?,
+                    )?;
+                    let value = T::from_resp(
+                        items
+                            .next()
+                            .ok_or(error::resp("Cannot be converted into a hashmap", "".into()))?,
+                    )?;
 
                     map.insert(key, value);
                 }
@@ -711,8 +719,16 @@ mod tests {
         expected.insert("KEY1".to_string(), "VALUE1".to_string());
         expected.insert("KEY2".to_string(), "VALUE2".to_string());
 
-        let resp_object = RespValue::Array(vec!["KEY1".into(), "VALUE1".into(), "KEY2".into(), "VALUE2".into()]);
-        assert_eq!(HashMap::<String, String>::from_resp(resp_object).unwrap(), expected);
+        let resp_object = RespValue::Array(vec![
+            "KEY1".into(),
+            "VALUE1".into(),
+            "KEY2".into(),
+            "VALUE2".into(),
+        ]);
+        assert_eq!(
+            HashMap::<String, String>::from_resp(resp_object).unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -722,12 +738,18 @@ mod tests {
         expected.insert("KEY2".to_string(), "VALUE2".to_string());
         expected.insert("KEY3".to_string(), "VALUE3".to_string());
 
-        let resp_object = RespValue::Array(vec!["KEY1".into(), "VALUE1".into(), "KEY2".into(), "VALUE2".into(), "KEY3".into()]);
+        let resp_object = RespValue::Array(vec![
+            "KEY1".into(),
+            "VALUE1".into(),
+            "KEY2".into(),
+            "VALUE2".into(),
+            "KEY3".into(),
+        ]);
         let res = HashMap::<String, String>::from_resp(resp_object);
 
         match res {
-            Err(Error::RESP(_, _)) => {},
-            _ => panic!("Converted to an uneven array of elements to a hashmap")
+            Err(Error::RESP(_, _)) => {}
+            _ => panic!("Converted to an uneven array of elements to a hashmap"),
         }
     }
 }
