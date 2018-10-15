@@ -199,7 +199,7 @@ impl<K: FromResp + Hash + Eq, T: FromResp> FromResp for HashMap<K, T> {
                 while let Some(k) = items.next() {
                     let key = K::from_resp(k)?;
                     let value = T::from_resp(items.next().ok_or(error::resp(
-                        "Cannot convert odd number of elements into a hashmap",
+                        "Cannot convert an odd number of elements into a hashmap",
                         "".into(),
                     ))?)?;
 
@@ -723,12 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hashmap_conversion_fails_with_uneven() {
-        let mut expected = HashMap::new();
-        expected.insert("KEY1".to_string(), "VALUE1".to_string());
-        expected.insert("KEY2".to_string(), "VALUE2".to_string());
-        expected.insert("KEY3".to_string(), "VALUE3".to_string());
-
+    fn test_hashmap_conversion_fails_with_odd_length_array() {
         let resp_object = RespValue::Array(vec![
             "KEY1".into(),
             "VALUE1".into(),
@@ -740,7 +735,7 @@ mod tests {
 
         match res {
             Err(Error::RESP(_, _)) => {}
-            _ => panic!("Converted to an uneven array of elements to a hashmap"),
+            _ => panic!("Should not be able to convert an odd number of elements to a hashmap"),
         }
     }
 }
