@@ -208,7 +208,7 @@ impl<K: FromResp + Hash + Eq, T: FromResp> FromResp for HashMap<K, T> {
 
                 Ok(map)
             }
-            _ => Err(error::resp("Cannot be converted into a vector", resp)),
+            _ => Err(error::resp("Cannot be converted into a hashmap", resp)),
         }
     }
 }
