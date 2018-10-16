@@ -11,7 +11,7 @@
 //! An implementation of the RESP protocol
 
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 use std::io;
 use std::str;
 
@@ -189,19 +189,21 @@ impl<T: FromResp> FromResp for Vec<T> {
     }
 }
 
-impl<K: FromResp + Hash + Eq, T: FromResp> FromResp for HashMap<K, T> {
-    fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T>, Error> {
+impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp for HashMap<K, T, S> {
+    fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T, S>, Error> {
         match resp {
             RespValue::Array(ary) => {
-                let mut map = HashMap::new();
+                let mut map = HashMap::with_capacity_and_hasher(ary.len(), S::default());
                 let mut items = ary.into_iter();
 
                 while let Some(k) = items.next() {
                     let key = K::from_resp(k)?;
-                    let value = T::from_resp(items.next().ok_or(error::resp(
-                        "Cannot convert an odd number of elements into a hashmap",
-                        "".into(),
-                    ))?)?;
+                    let value = T::from_resp(items.next().ok_or_else(|| {
+                        error::resp(
+                            "Cannot convert an odd number of elements into a hashmap",
+                            "".into(),
+                        )
+                    })?)?;
 
                     map.insert(key, value);
                 }

@@ -29,7 +29,7 @@ fn main() {
 
     let addr = env::args()
         .nth(1)
-        .unwrap_or("127.0.0.1:6379".to_string())
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
         .parse()
         .unwrap();
 

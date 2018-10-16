@@ -20,10 +20,12 @@ use redis_async::client;
 use redis_async::resp::FromResp;
 
 fn main() {
-    let topic = env::args().nth(1).unwrap_or("test-topic".to_string());
+    let topic = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "test-topic".to_string());
     let addr = env::args()
         .nth(2)
-        .unwrap_or("127.0.0.1:6379".to_string())
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
         .parse()
         .unwrap();
 
