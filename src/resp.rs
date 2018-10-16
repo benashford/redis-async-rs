@@ -10,6 +10,8 @@
 
 //! An implementation of the RESP protocol
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::io;
 use std::str;
 
@@ -183,6 +185,30 @@ impl<T: FromResp> FromResp for Vec<T> {
                 Ok(ar)
             }
             _ => Err(error::resp("Cannot be converted into a vector", resp)),
+        }
+    }
+}
+
+impl<K: FromResp + Hash + Eq, T: FromResp> FromResp for HashMap<K, T> {
+    fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T>, Error> {
+        match resp {
+            RespValue::Array(ary) => {
+                let mut map = HashMap::new();
+                let mut items = ary.into_iter();
+
+                while let Some(k) = items.next() {
+                    let key = K::from_resp(k)?;
+                    let value = T::from_resp(items.next().ok_or(error::resp(
+                        "Cannot convert an odd number of elements into a hashmap",
+                        "".into(),
+                    ))?)?;
+
+                    map.insert(key, value);
+                }
+
+                Ok(map)
+            }
+            _ => Err(error::resp("Cannot be converted into a hashmap", resp)),
         }
     }
 }
@@ -613,11 +639,13 @@ impl Decoder for RespCodec {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bytes::BytesMut;
 
     use tokio_io::codec::{Decoder, Encoder};
 
-    use super::{FromResp, RespCodec, RespValue};
+    use super::{Error, FromResp, RespCodec, RespValue};
 
     #[test]
     fn test_bulk_string() {
@@ -674,5 +702,40 @@ mod tests {
     fn test_integer_convesion() {
         let resp_object = RespValue::Integer(50);
         assert_eq!(u32::from_resp(resp_object).unwrap(), 50);
+    }
+
+    #[test]
+    fn test_hashmap_conversion() {
+        let mut expected = HashMap::new();
+        expected.insert("KEY1".to_string(), "VALUE1".to_string());
+        expected.insert("KEY2".to_string(), "VALUE2".to_string());
+
+        let resp_object = RespValue::Array(vec![
+            "KEY1".into(),
+            "VALUE1".into(),
+            "KEY2".into(),
+            "VALUE2".into(),
+        ]);
+        assert_eq!(
+            HashMap::<String, String>::from_resp(resp_object).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_hashmap_conversion_fails_with_odd_length_array() {
+        let resp_object = RespValue::Array(vec![
+            "KEY1".into(),
+            "VALUE1".into(),
+            "KEY2".into(),
+            "VALUE2".into(),
+            "KEY3".into(),
+        ]);
+        let res = HashMap::<String, String>::from_resp(resp_object);
+
+        match res {
+            Err(Error::RESP(_, _)) => {}
+            _ => panic!("Should not be able to convert an odd number of elements to a hashmap"),
+        }
     }
 }
