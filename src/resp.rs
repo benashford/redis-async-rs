@@ -124,6 +124,7 @@ impl FromResp for i64 {
 macro_rules! impl_fromresp_integers {
     ($($int_ty:ident),* $(,)*) => {
         $(
+            #[allow(clippy::cast_lossless)]
             impl FromResp for $int_ty {
                 fn from_resp_int(resp: RespValue) -> Result<Self, Error> {
                     i64::from_resp_int(resp).and_then(|x| {
@@ -487,7 +488,7 @@ fn scan_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, &[u8])>
                 return Err(parse_error(format!(
                     "Unexpected byte in size_string: {}",
                     val
-                )))
+                )));
             }
         }
         pos += 1;

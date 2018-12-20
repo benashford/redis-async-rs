@@ -114,6 +114,11 @@ impl PubsubConnectionInner {
     }
 
     fn handle_message(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
+        //
+        // This function will log errors for unexpected data, but this should probably be
+        // an error. However this would be a breaking change (potentially) so it's
+        // continuing to do the logging thing in the meantime
+        //
         let (message_type, topic, msg) = match msg {
             resp::RespValue::Array(mut messages) => match (
                 messages.pop(),
@@ -141,24 +146,40 @@ impl PubsubConnectionInner {
             }
         };
 
-        if message_type == b"subscribe" {
-            if let Some((sender, signal)) = self.pending_subs.remove(&topic) {
-                self.subscriptions.insert(topic, sender);
-                signal
-                    .send(())
-                    .map_err(|_| error!("Error confirming subscription"))?;
+        match message_type.as_slice() {
+            b"subscribe" => match self.pending_subs.remove(&topic) {
+                Some((sender, signal)) => {
+                    self.subscriptions.insert(topic, sender);
+                    signal
+                        .send(())
+                        .map_err(|_| error!("Error confirming subscription"))?;
+                }
+                None => error!(
+                    "Received unexpected subscribe notification for topic: {}",
+                    topic
+                ),
+            },
+            b"unsubscribe" => {
+                match self.subscriptions.entry(topic) {
+                    Entry::Occupied(entry) => {
+                        entry.remove_entry();
+                    }
+                    Entry::Vacant(vacant) => {
+                        error!("Unexpected unsubscribe message: {}", vacant.key())
+                    }
+                }
+                if self.subscriptions.is_empty() {
+                    return Ok(false);
+                }
             }
-        } else if message_type == b"unsubscribe" {
-            if let Entry::Occupied(entry) = self.subscriptions.entry(topic) {
-                entry.remove_entry();
-            }
-            if self.subscriptions.is_empty() {
-                return Ok(false);
-            }
-        } else if message_type == b"message" {
-            if let Some(sender) = self.subscriptions.get(&topic) {
-                sender.unbounded_send(msg).expect("Cannot send message");
-            }
+            b"message" => match self.subscriptions.get(&topic) {
+                Some(sender) => sender.unbounded_send(msg).expect("Cannot send message"),
+                None => error!("Unexpected message on topic: {}", topic),
+            },
+            t => error!(
+                "Unexpected data on Pub/Sub connection: {}",
+                String::from_utf8_lossy(t)
+            ),
         }
 
         Ok(true)
@@ -239,7 +260,8 @@ pub fn pubsub_connect(
                 Box::new(con_f)
             },
         )
-    }).map(|out_tx_c| PubsubConnection { out_tx_c })
+    })
+    .map(|out_tx_c| PubsubConnection { out_tx_c })
     .map_err(|()| error::Error::EndOfStream)
 }
 

@@ -31,12 +31,14 @@ fn main() {
 
     let msgs =
         client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(&topic));
-    let the_loop = msgs.map_err(|_| ()).and_then(|msgs| {
-        msgs.for_each(|message| {
-            println!("{}", String::from_resp(message).unwrap());
-            future::ok(())
-        })
-    });
+    let the_loop = msgs
+        .map_err(|_| eprintln!("ERROR, stopping"))
+        .and_then(|msgs| {
+            msgs.for_each(|message| {
+                println!("{}", String::from_resp(message).unwrap());
+                future::ok(())
+            })
+        });
 
     tokio::run(the_loop);
 }

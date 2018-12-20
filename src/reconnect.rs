@@ -27,11 +27,14 @@ pub(crate) enum ReconnectError {
     NotConnected,
 }
 
+type WorkFn<T, A, RE> = Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync;
+type ConnFn<T, CE> = Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync;
+
 pub(crate) struct Reconnect<A, T, RE, CE> {
     state: Arc<RwLock<ReconnectState<T>>>,
 
-    work_fn: Arc<Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync>,
-    conn_fn: Arc<Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync>,
+    work_fn: Arc<WorkFn<T, A, RE>>,
+    conn_fn: Arc<ConnFn<T, CE>>,
 }
 
 pub(crate) fn reconnect<A, T, RE, CE, W, C>(
