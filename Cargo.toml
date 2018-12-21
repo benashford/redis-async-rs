@@ -20,4 +20,5 @@ tokio-tcp = "0.1"
 tokio-timer = "^0.2.8"
 
 [dev-dependencies]
+env_logger = "0.6"
 tokio = "0.1"

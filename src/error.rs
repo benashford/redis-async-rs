@@ -43,11 +43,15 @@ pub enum Error {
     Unexpected(String),
 }
 
-pub fn internal<T: Into<String>>(msg: T) -> Error {
+pub(crate) fn internal(msg: impl Into<String>) -> Error {
     Error::Internal(msg.into())
 }
 
-pub fn resp<T: Into<String>>(msg: T, resp: resp::RespValue) -> Error {
+pub(crate) fn unexpected(msg: impl Into<String>) -> Error {
+    Error::Unexpected(msg.into())
+}
+
+pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
     Error::RESP(msg.into(), Some(resp))
 }
 

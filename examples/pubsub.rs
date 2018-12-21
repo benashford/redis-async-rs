@@ -8,10 +8,6 @@
  * except according to those terms.
  */
 
-extern crate futures;
-extern crate redis_async;
-extern crate tokio;
-
 use std::env;
 
 use futures::{future, Future, Stream};
@@ -20,6 +16,7 @@ use redis_async::client;
 use redis_async::resp::FromResp;
 
 fn main() {
+    env_logger::init();
     let topic = env::args()
         .nth(1)
         .unwrap_or_else(|| "test-topic".to_string());
@@ -32,13 +29,16 @@ fn main() {
     let msgs =
         client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(&topic));
     let the_loop = msgs
-        .map_err(|_| eprintln!("ERROR, stopping"))
+        .map_err(|e| eprintln!("ERROR, cannot receive messages. Error message: {:?}", e))
         .and_then(|msgs| {
             msgs.for_each(|message| {
                 println!("{}", String::from_resp(message).unwrap());
                 future::ok(())
             })
+            .map_err(|e| eprintln!("ERROR, stopping. Error message: {:?}", e))
         });
 
     tokio::run(the_loop);
+
+    println!("The end");
 }
