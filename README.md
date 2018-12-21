@@ -17,7 +17,7 @@ Initially I'm focussing on single-server Redis instances, another long-term goal
 
 ### Minimum rustc version
 
-Version 0.3 requires rustc 1.26.0 or higher.
+Version 0.5 requires rustc 1.31.0 or higher.
 
 ## Other clients
 

@@ -21,9 +21,9 @@ use futures::{
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
-use error;
-use reconnect::{reconnect, Reconnect};
-use resp::{self, FromResp};
+use crate::error;
+use crate::reconnect::{reconnect, Reconnect};
+use crate::resp::{self, FromResp};
 
 #[derive(Debug)]
 enum PubsubEvent {
@@ -58,7 +58,7 @@ impl PubsubConnectionInner {
         match self
             .connection
             .start_send(msg)
-            .map_err(|e| error!("Cannot send subscription request to Redis: {}", e))?
+            .map_err(|e| log::error!("Cannot send subscription request to Redis: {}", e))?
         {
             AsyncSink::Ready => Ok(true),
             AsyncSink::NotReady(msg) => {
@@ -72,7 +72,7 @@ impl PubsubConnectionInner {
         self.connection
             .poll_complete()
             .map(|_| ())
-            .map_err(|e| error!("Error polling for completeness: {}", e))
+            .map_err(|e| log::error!("Error polling for completeness: {}", e))
     }
 
     // Returns true = flushing required.  false = no flushing required
@@ -88,7 +88,7 @@ impl PubsubConnectionInner {
             match self
                 .out_rx
                 .poll()
-                .map_err(|_| error!("Cannot poll for new subscriptions"))?
+                .map_err(|_| log::error!("Cannot poll for new subscriptions"))?
             {
                 Async::Ready(None) => {
                     return Ok(flushing_req);
@@ -130,18 +130,18 @@ impl PubsubConnectionInner {
                     match (msg, String::from_resp(topic), message_type) {
                         (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => {
-                            error!("Incorrect format of PUBSUB message");
+                            log::error!("Incorrect format of PUBSUB message");
                             return Err(());
                         }
                     }
                 }
                 _ => {
-                    error!("Wrong number of parts for a PUBSUB message");
+                    log::error!("Wrong number of parts for a PUBSUB message");
                     return Err(());
                 }
             },
             _ => {
-                error!("PUBSUB message should be encoded as an array");
+                log::error!("PUBSUB message should be encoded as an array");
                 return Err(());
             }
         };
@@ -152,9 +152,9 @@ impl PubsubConnectionInner {
                     self.subscriptions.insert(topic, sender);
                     signal
                         .send(())
-                        .map_err(|_| error!("Error confirming subscription"))?;
+                        .map_err(|_| log::error!("Error confirming subscription"))?;
                 }
-                None => error!(
+                None => log::error!(
                     "Received unexpected subscribe notification for topic: {}",
                     topic
                 ),
@@ -165,7 +165,7 @@ impl PubsubConnectionInner {
                         entry.remove_entry();
                     }
                     Entry::Vacant(vacant) => {
-                        error!("Unexpected unsubscribe message: {}", vacant.key())
+                        log::error!("Unexpected unsubscribe message: {}", vacant.key())
                     }
                 }
                 if self.subscriptions.is_empty() {
@@ -174,9 +174,9 @@ impl PubsubConnectionInner {
             }
             b"message" => match self.subscriptions.get(&topic) {
                 Some(sender) => sender.unbounded_send(msg).expect("Cannot send message"),
-                None => error!("Unexpected message on topic: {}", topic),
+                None => log::error!("Unexpected message on topic: {}", topic),
             },
-            t => error!(
+            t => log::error!(
                 "Unexpected data on Pub/Sub connection: {}",
                 String::from_utf8_lossy(t)
             ),
@@ -191,7 +191,7 @@ impl PubsubConnectionInner {
             match self
                 .connection
                 .poll()
-                .map_err(|e| error!("Polling error for messages: {}", e))?
+                .map_err(|e| log::error!("Polling error for messages: {}", e))?
             {
                 Async::Ready(None) => return Ok(false),
                 Async::Ready(Some(message)) => {

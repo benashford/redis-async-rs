@@ -1,12 +1,13 @@
 [package]
 name = "redis-async"
-version = "0.4.3"
+version = "0.5.0"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
 description = "An asynchronous futures based Redis client for Rust using Tokio"
 repository = "https://github.com/benashford/redis-async-rs"
 keywords = ["redis", "tokio"]
+edition = "2018"
 
 [dependencies]
 bytes = "0.4"
@@ -16,7 +17,7 @@ tokio-codec = "0.1"
 tokio-executor = "0.1"
 tokio-io = "0.1"
 tokio-tcp = "0.1"
-tokio-timer = "^0.2.6"
+tokio-timer = "^0.2.8"
 
 [dev-dependencies]
 tokio = "0.1"

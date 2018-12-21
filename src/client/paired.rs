@@ -21,9 +21,9 @@ use futures::{
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
-use error;
-use reconnect::{reconnect, Reconnect};
-use resp;
+use crate::error;
+use crate::reconnect::{reconnect, Reconnect};
+use crate::resp;
 
 enum SendStatus {
     Ok,
@@ -63,7 +63,7 @@ impl PairedConnectionInner {
         match self
             .connection
             .start_send(msg)
-            .map_err(|e| error!("Error sending message to connection: {}", e))?
+            .map_err(|e| log::error!("Error sending message to connection: {}", e))?
         {
             AsyncSink::Ready => {
                 self.send_status = SendStatus::Ok;
@@ -89,7 +89,7 @@ impl PairedConnectionInner {
             SendStatus::Ok => match self
                 .out_rx
                 .poll()
-                .map_err(|_| error!("Error polling for messages to send"))?
+                .map_err(|_| log::error!("Error polling for messages to send"))?
             {
                 Async::Ready(Some((msg, tx))) => {
                     self.waiting.push_back(tx);
@@ -109,7 +109,7 @@ impl PairedConnectionInner {
     fn poll_complete(&mut self) -> Result<(), ()> {
         self.connection
             .poll_complete()
-            .map_err(|e| error!("Error polling for completeness: {}", e))?;
+            .map_err(|e| log::error!("Error polling for completeness: {}", e))?;
         Ok(())
     }
 
@@ -122,10 +122,10 @@ impl PairedConnectionInner {
         match self
             .connection
             .poll()
-            .map_err(|e| error!("Error polling to receive messages: {}", e))?
+            .map_err(|e| log::error!("Error polling to receive messages: {}", e))?
         {
             Async::Ready(None) => {
-                error!("Connection to Redis closed unexpectedly");
+                log::error!("Connection to Redis closed unexpectedly");
                 Err(())
             }
             Async::Ready(Some(msg)) => {
@@ -209,7 +209,8 @@ pub fn paired_connect(
                 Box::new(con_f)
             },
         )
-    }).map(|out_tx_c| PairedConnection { out_tx_c })
+    })
+    .map(|out_tx_c| PairedConnection { out_tx_c })
     .map_err(|()| error::Error::EndOfStream)
 }
 
@@ -235,7 +236,7 @@ impl PairedConnection {
             _ => {
                 return Either::B(future::err(error::internal(
                     "Command must be a RespValue::Array",
-                )))
+                )));
             }
         }
 

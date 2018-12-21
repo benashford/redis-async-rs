@@ -66,7 +66,7 @@ impl RespValue {
                 let mut new_vals = other.drain(..).map(|t| t.into()).collect();
                 vals.append(&mut new_vals);
             }
-            _ => warn!("Can only append to arrays"),
+            _ => log::warn!("Can only append to arrays"),
         }
         self
     }

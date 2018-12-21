@@ -76,7 +76,7 @@ where
     fn call_work(&self, t: &T, a: A) -> impl Future<Item = (), Error = ReconnectError> {
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
-            error!("Cannot perform action: {}", e);
+            log::error!("Cannot perform action: {}", e);
             reconnect.disconnect();
             ReconnectError::ConnectionDropped
         })
@@ -84,10 +84,9 @@ where
 
     // Called when a bad situation has been discovered, force the connections to re-connect.
     fn disconnect(&self) {
-        {
-            let mut state = self.state.write().expect("Cannot obtain a write lock");
-            *state = NotConnected;
-        }
+        let mut state = self.state.write().expect("Cannot obtain a write lock");
+        *state = NotConnected;
+
         self.reconnect();
     }
 
@@ -112,11 +111,11 @@ where
         let mut state = self.state.write().expect("Cannot obtain write lock");
         match *state {
             Connected(_) => {
-                debug!("Already connected, will not attempt to reconnect");
+                log::debug!("Already connected, will not attempt to reconnect");
                 return Either::B(future::err(()));
             }
             Connecting => {
-                debug!("Already attempting to connect, will not attempt again");
+                log::debug!("Already attempting to connect, will not attempt again");
                 return Either::B(future::err(()));
             }
             _ => (),
@@ -133,21 +132,21 @@ where
             let result = match *state {
                 NotConnected | Connecting => match t {
                     Ok(t) => {
-                        info!("Connection established");
+                        log::info!("Connection established");
                         *state = Connected(t);
                         Ok(())
                     }
                     Err(e) => {
                         match e.into_inner() {
-                            Some(e) => error!("Connection failed: {}", e),
-                            None => error!("Connection timed-out"),
+                            Some(e) => log::error!("Connection failed: {}", e),
+                            None => log::error!("Connection timed-out"),
                         }
                         *state = NotConnected;
                         Err(())
                     }
                 },
                 Connected(_) => {
-                    error!("Already connected, discarding new connection");
+                    log::error!("Already connected, discarding new connection");
                     Err(())
                 }
             };
