@@ -30,18 +30,29 @@ use crate::{
 
 #[derive(Debug)]
 enum PubsubEvent {
+    /// The: topic, sink to send messages through, and a oneshot to signal subscription has
+    /// occurred.
     Subscribe(String, PubsubSink, oneshot::Sender<()>),
+    /// The name of the topic to unsubscribe from. Unsubscription will be signaled by the stream
+    /// closing without error.
     Unsubscribe(String),
 }
 
-pub type PubsubStreamInner = mpsc::UnboundedReceiver<Result<resp::RespValue, error::Error>>;
-pub type PubsubSink = mpsc::UnboundedSender<Result<resp::RespValue, error::Error>>;
+type PubsubStreamInner = mpsc::UnboundedReceiver<Result<resp::RespValue, error::Error>>;
+type PubsubSink = mpsc::UnboundedSender<Result<resp::RespValue, error::Error>>;
 
+/// A spawned future that handles a Pub/Sub connection and routes messages to streams for
+/// downstream consumption
 struct PubsubConnectionInner {
+    /// The actual Redis connection
     connection: RespConnection,
+    /// A stream onto which subscription/unsubscription requests are read
     out_rx: Fuse<mpsc::UnboundedReceiver<PubsubEvent>>,
+    /// Current subscriptions
     subscriptions: BTreeMap<String, PubsubSink>,
+    /// Subscriptions that have not yet been confirmed
     pending_subs: BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
+    /// Any incomplete messages to-be-sent
     send_pending: Option<resp::RespValue>,
 }
 
@@ -58,13 +69,12 @@ impl PubsubConnectionInner {
 
     /// Returns true = OK, more can be sent, or false = sink is full, needs flushing
     fn do_send(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
-        match self.connection.start_send(msg) {
-            Ok(AsyncSink::Ready) => Ok(true),
-            Ok(AsyncSink::NotReady(msg)) => {
+        match self.connection.start_send(msg)? {
+            AsyncSink::Ready => Ok(true),
+            AsyncSink::NotReady(msg) => {
                 self.send_pending = Some(msg);
                 Ok(false)
             }
-            Err(e) => Err(e.into()),
         }
     }
 
@@ -115,11 +125,6 @@ impl PubsubConnectionInner {
     }
 
     fn handle_message(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
-        //
-        // This function will log errors for unexpected data, but this should probably be
-        // an error. However this would be a breaking change (potentially) so it's
-        // continuing to do the logging thing in the meantime
-        //
         let (message_type, topic, msg) = match msg {
             resp::RespValue::Array(mut messages) => match (
                 messages.pop(),
@@ -256,7 +261,10 @@ pub struct PubsubConnection {
 
 /// Used for Redis's PUBSUB functionality.
 ///
-/// Returns a future that resolves to a `PubsubConnection`.
+/// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
+/// connection is established; after the intial establishment, if the connection drops for any
+/// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
+/// any subscriptions will need to be re-subscribed.
 pub fn pubsub_connect(
     addr: &SocketAddr,
 ) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
@@ -295,6 +303,12 @@ impl PubsubConnection {
     ///
     /// Returns a future that resolves to a `Stream` that contains all the messages published on
     /// that particular topic.
+    ///
+    /// The resolved stream will end with `redis_async::error::Error::EndOfStream` if the
+    /// underlying connection is lost for unexpected reasons. In this situation, clients should
+    /// `subscribe` to re-subscribe; the underlying connect will automatically reconnect. However,
+    /// clients should be aware that resubscriptions will only succeed if the underlying connection
+    /// has re-established, so multiple calls to `subscribe` may be required.
     pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
@@ -311,6 +325,8 @@ impl PubsubConnection {
         do_work_f.and_then(|()| signal_r.map(|_| stream).map_err(|e| e.into()))
     }
 
+    /// Tells the client to unsubscribe from a particular topic. This will return immediately, the
+    /// actual unsubscription will be confirmed when the stream returned from `subscribe` ends.
     pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
         // Ignoring any results, as any errors communicating with Redis would de-facto unsubscribe
         // anyway, and would be reported/logged elsewhere

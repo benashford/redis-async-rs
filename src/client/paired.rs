@@ -21,28 +21,49 @@ use futures::{
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
-use crate::error;
-use crate::reconnect::{reconnect, Reconnect};
-use crate::resp;
 
+use crate::{
+    error,
+    reconnect::{reconnect, Reconnect},
+    resp,
+};
+
+/// The state of sending messages to a Redis server
 enum SendStatus {
+    /// The connection is clear, more messages can be sent
     Ok,
+    /// The connection has closed, nothing more should be sent
     End,
+    /// The connection reported itself as full, it should be flushed before attempting to send the
+    /// pending message again
     Full(resp::RespValue),
 }
 
+/// The state of receiving messages from a Redis server
 #[derive(Debug)]
 enum ReceiveStatus {
+    /// Everything has been read, and the connection is closed, don't attempt to read any more
     ReadyFinished,
+    /// Everything has been read, but the connection is open for future messages.
     ReadyMore,
+    /// The connection is not ready
     NotReady,
 }
 
-struct PairedConnectionInner {
-    connection: RespConnection,
-    out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
-    waiting: VecDeque<oneshot::Sender<resp::RespValue>>,
+type Responder = oneshot::Sender<resp::RespValue>;
+type SendPayload = (resp::RespValue, Responder);
 
+/// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
+/// results onto a `RespConnection` that is otherwise unpaired
+struct PairedConnectionInner {
+    /// The underlying connection that talks the RESP protocol
+    connection: RespConnection,
+    /// The channel upon which commands are received
+    out_rx: mpsc::UnboundedReceiver<SendPayload>,
+    /// The queue of waiting oneshot's for commands sent but results not yet received
+    waiting: VecDeque<Responder>,
+
+    /// The status of the underlying connection
     send_status: SendStatus,
 }
 
@@ -59,12 +80,8 @@ impl PairedConnectionInner {
         }
     }
 
-    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, ()> {
-        match self
-            .connection
-            .start_send(msg)
-            .map_err(|e| log::error!("Error sending message to connection: {}", e))?
-        {
+    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
+        match self.connection.start_send(msg)? {
             AsyncSink::Ready => {
                 self.send_status = SendStatus::Ok;
                 Ok(true)
@@ -76,7 +93,7 @@ impl PairedConnectionInner {
         }
     }
 
-    fn poll_start_send(&mut self) -> Result<bool, ()> {
+    fn poll_start_send(&mut self) -> Result<bool, error::Error> {
         let mut status = SendStatus::Ok;
         ::std::mem::swap(&mut status, &mut self.send_status);
 
@@ -86,48 +103,36 @@ impl PairedConnectionInner {
                 return Ok(false);
             }
             SendStatus::Full(msg) => msg,
-            SendStatus::Ok => match self
-                .out_rx
-                .poll()
-                .map_err(|_| log::error!("Error polling for messages to send"))?
-            {
-                Async::Ready(Some((msg, tx))) => {
+            SendStatus::Ok => match self.out_rx.poll() {
+                Ok(Async::Ready(Some((msg, tx)))) => {
                     self.waiting.push_back(tx);
                     msg
                 }
-                Async::Ready(None) => {
+                Ok(Async::Ready(None)) => {
                     self.send_status = SendStatus::End;
                     return Ok(false);
                 }
-                Async::NotReady => return Ok(false),
+                Ok(Async::NotReady) => return Ok(false),
+                Err(()) => return Err(error::internal("Error polling for messages to send")),
             },
         };
 
         self.impl_start_send(message)
     }
 
-    fn poll_complete(&mut self) -> Result<(), ()> {
-        self.connection
-            .poll_complete()
-            .map_err(|e| log::error!("Error polling for completeness: {}", e))?;
+    fn poll_complete(&mut self) -> Result<(), error::Error> {
+        self.connection.poll_complete()?;
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<ReceiveStatus, ()> {
+    fn receive(&mut self) -> Result<ReceiveStatus, error::Error> {
         if let SendStatus::End = self.send_status {
             if self.waiting.is_empty() {
                 return Ok(ReceiveStatus::ReadyFinished);
             }
         }
-        match self
-            .connection
-            .poll()
-            .map_err(|e| log::error!("Error polling to receive messages: {}", e))?
-        {
-            Async::Ready(None) => {
-                log::error!("Connection to Redis closed unexpectedly");
-                Err(())
-            }
+        match self.connection.poll()? {
+            Async::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
             Async::Ready(Some(msg)) => {
                 let tx = match self.waiting.pop_front() {
                     Some(tx) => tx,
@@ -143,7 +148,7 @@ impl PairedConnectionInner {
 
 impl Future for PairedConnectionInner {
     type Item = ();
-    type Error = ();
+    type Error = error::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // If there's something to send, send it...
@@ -165,8 +170,6 @@ impl Future for PairedConnectionInner {
     }
 }
 
-type SendPayload = (resp::RespValue, oneshot::Sender<resp::RespValue>);
-
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Clone)]
 pub struct PairedConnection {
@@ -176,7 +179,15 @@ pub struct PairedConnection {
 
 /// The default starting point to use most default Redis functionality.
 ///
-/// Returns a future that resolves to a `PairedConnection`.
+/// Returns a future that resolves to a `PairedConnection`. The future will complete when the
+/// initial connection is established.
+///
+/// Once the initial connection is established, the connection will attempt to reconnect should
+/// the connection be broken (e.g. the Redis server being restarted), but reconnections occur
+/// asynchronously, so all commands issued while the connection is unavailable will error, it is
+/// the client's responsibility to retry commands as applicable. Also, at least one command needs
+/// to be tried against the connection to trigger the re-connection attempt; this means at least
+/// one command will definitely fail in a disconnect/reconnect scenario.
 pub fn paired_connect(
     addr: &SocketAddr,
 ) -> impl Future<Item = PairedConnection, Error = error::Error> + Send {
@@ -194,8 +205,10 @@ pub fn paired_connect(
             move || {
                 let con_f = connect(&addr).map_err(|e| e.into()).and_then(|connection| {
                     let (out_tx, out_rx) = mpsc::unbounded();
-                    let paired_connection_inner =
-                        Box::new(PairedConnectionInner::new(connection, out_rx));
+                    let paired_connection_inner = Box::new(
+                        PairedConnectionInner::new(connection, out_rx)
+                            .map_err(|e| log::error!("PairedConnection error: {}", e)),
+                    );
                     let mut executor = DefaultExecutor::current();
 
                     match executor.spawn(paired_connection_inner) {
