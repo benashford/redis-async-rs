@@ -23,7 +23,7 @@ use tokio_executor::{DefaultExecutor, Executor};
 use super::connect::{connect, RespConnection};
 
 use crate::{
-    error,
+    error::{self, ConnectionReason},
     reconnect::{reconnect, Reconnect},
     resp::{self, FromResp},
 };
@@ -210,10 +210,14 @@ impl PubsubConnectionInner {
                     if self.subscriptions.is_empty() {
                         return Ok(false);
                     } else {
+                        // This can only happen if the connection is closed server-side
                         for sub in self.subscriptions.values() {
-                            sub.unbounded_send(Err(error::Error::EndOfStream)).unwrap();
+                            sub.unbounded_send(Err(error::Error::Connection(
+                                ConnectionReason::NotConnected,
+                            )))
+                            .unwrap();
                         }
-                        return Err(error::Error::EndOfStream);
+                        return Err(error::Error::Connection(ConnectionReason::NotConnected));
                     }
                 }
                 Ok(Async::Ready(Some(message))) => {
@@ -225,7 +229,11 @@ impl PubsubConnectionInner {
                 Ok(Async::NotReady) => return Ok(true),
                 Err(e) => {
                     for sub in self.subscriptions.values() {
-                        sub.unbounded_send(Err(error::Error::EndOfStream)).unwrap();
+                        sub.unbounded_send(Err(error::unexpected(format!(
+                            "Connection is in the process of failing due to: {}",
+                            e
+                        ))))
+                        .unwrap();
                     }
                     return Err(e);
                 }
@@ -255,8 +263,7 @@ impl Future for PubsubConnectionInner {
 /// A shareable reference to subscribe to PUBSUB topics
 #[derive(Clone)]
 pub struct PubsubConnection {
-    out_tx_c:
-        Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>, error::Error, error::Error>,
+    out_tx_c: Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>,
 }
 
 /// Used for Redis's PUBSUB functionality.
@@ -295,7 +302,6 @@ pub fn pubsub_connect(
         )
     })
     .map(|out_tx_c| PubsubConnection { out_tx_c })
-    .map_err(|()| error::Error::EndOfStream)
 }
 
 impl PubsubConnection {
@@ -312,10 +318,9 @@ impl PubsubConnection {
     pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
-        let do_work_f = self
-            .out_tx_c
-            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))
-            .map_err(|_| error::Error::EndOfStream);
+        let do_work_f =
+            self.out_tx_c
+                .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t));
 
         let stream = PubsubStream {
             topic: topic.to_owned(),

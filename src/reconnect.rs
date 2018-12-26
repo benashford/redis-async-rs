@@ -8,46 +8,34 @@
  * except according to those terms.
  */
 
-use std::error as std_error;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use futures::{
     future::{self, Either},
-    sync::oneshot,
     Future,
 };
 
-use tokio_executor::{DefaultExecutor, Executor};
-use tokio_timer::Timeout;
+use crate::error::{self, ConnectionReason};
 
-#[derive(Debug)]
-pub(crate) enum ReconnectError {
-    ConnectionDropped,
-    NotConnected,
-}
+type WorkFn<T, A> = Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync;
+type ConnFn<T> = Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync;
 
-type WorkFn<T, A, RE> = Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync;
-type ConnFn<T, CE> = Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync;
-
-pub(crate) struct Reconnect<A, T, RE, CE> {
+pub(crate) struct Reconnect<A, T> {
     state: Arc<RwLock<ReconnectState<T>>>,
 
-    work_fn: Arc<WorkFn<T, A, RE>>,
-    conn_fn: Arc<ConnFn<T, CE>>,
+    work_fn: Arc<WorkFn<T, A>>,
+    conn_fn: Arc<ConnFn<T>>,
 }
 
-pub(crate) fn reconnect<A, T, RE, CE, W, C>(
+pub(crate) fn reconnect<A, T, W, C>(
     w: W,
     c: C,
-) -> impl Future<Item = Reconnect<A, T, RE, CE>, Error = ()>
+) -> impl Future<Item = Reconnect<A, T>, Error = error::Error>
 where
     A: Send + 'static,
-    W: Fn(&T, A) -> Box<Future<Item = (), Error = RE> + Send> + Send + Sync + 'static,
-    C: Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync + 'static,
+    W: Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync + 'static,
+    C: Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
-    RE: std_error::Error + 'static,
-    CE: std_error::Error + 'static,
 {
     let r = Reconnect {
         state: Arc::new(RwLock::new(ReconnectState::NotConnected)),
@@ -66,19 +54,17 @@ enum ReconnectState<T> {
 
 use self::ReconnectState::*;
 
-impl<A, T, RE, CE> Reconnect<A, T, RE, CE>
+impl<A, T> Reconnect<A, T>
 where
     A: Send + 'static,
     T: Clone + Send + Sync + 'static,
-    RE: std_error::Error + 'static,
-    CE: std_error::Error + 'static,
 {
-    fn call_work(&self, t: &T, a: A) -> impl Future<Item = (), Error = ReconnectError> {
+    fn call_work(&self, t: &T, a: A) -> impl Future<Item = (), Error = error::Error> {
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
-            log::error!("Cannot perform action: {}", e);
+            log::error!("Error in work_fn will force connection closed, next command will attempt to re-establish it: {}", e);
             reconnect.disconnect();
-            ReconnectError::ConnectionDropped
+            e
         })
     }
 
@@ -86,50 +72,51 @@ where
     fn disconnect(&self) {
         let mut state = self.state.write().expect("Cannot obtain a write lock");
         *state = NotConnected;
-
-        self.reconnect();
     }
 
-    pub(crate) fn do_work(&self, a: A) -> impl Future<Item = (), Error = ReconnectError> {
-        let (attempt_reload, fut) = {
+    pub(crate) fn do_work(&self, a: A) -> impl Future<Item = (), Error = error::Error> {
+        let work_result_f = {
             let state = self.state.read().expect("Cannot obtain read lock");
             match *state {
-                NotConnected => (true, Either::B(future::err(ReconnectError::NotConnected))),
-                Connected(ref t) => (false, Either::A(self.call_work(t, a))),
-                Connecting => (false, Either::B(future::err(ReconnectError::NotConnected))),
+                NotConnected => Ok(()),
+                Connected(ref t) => Err(Either::A(self.call_work(t, a))),
+                Connecting => Err(Either::B(future::err(error::Error::Connection(
+                    ConnectionReason::Connecting,
+                )))),
             }
         };
-        if attempt_reload {
-            self.reconnect();
+        match work_result_f {
+            Ok(()) => Either::A(self.reconnect().then(|t| match t {
+                Ok(()) => Err(error::Error::Connection(ConnectionReason::NotConnected)),
+                Err(e) => Err(e),
+            })),
+            Err(fut) => Either::B(fut),
         }
-        fut
     }
 
     /// Returns a future that completes when the connection is established or failed to establish
     /// used only for timing.
-    fn reconnect(&self) -> impl Future<Item = (), Error = ()> {
+    fn reconnect(&self) -> impl Future<Item = (), Error = error::Error> {
         let mut state = self.state.write().expect("Cannot obtain write lock");
         match *state {
             Connected(_) => {
-                log::debug!("Already connected, will not attempt to reconnect");
-                return Either::B(future::err(()));
+                return Either::B(future::err(error::Error::Connection(
+                    ConnectionReason::Connected,
+                )));
             }
             Connecting => {
-                log::debug!("Already attempting to connect, will not attempt again");
-                return Either::B(future::err(()));
+                return Either::B(future::err(error::Error::Connection(
+                    ConnectionReason::Connecting,
+                )));
             }
-            _ => (),
+            NotConnected => (),
         }
         *state = ReconnectState::Connecting;
 
         let reconnect = self.clone();
-        let connect_f = (self.conn_fn)();
-
-        let (tx, rx) = oneshot::channel();
-
-        let connect_f = Timeout::new(connect_f, Duration::from_secs(30)).then(move |t| {
+        let connect_f = (self.conn_fn)().then(move |t| {
             let mut state = reconnect.state.write().expect("Cannot obtain write lock");
-            let result = match *state {
+            match *state {
                 NotConnected | Connecting => match t {
                     Ok(t) => {
                         log::info!("Connection established");
@@ -137,33 +124,20 @@ where
                         Ok(())
                     }
                     Err(e) => {
-                        match e.into_inner() {
-                            Some(e) => log::error!("Connection failed: {}", e),
-                            None => log::error!("Connection timed-out"),
-                        }
+                        log::error!("Connection cannot be established: {}", e);
                         *state = NotConnected;
-                        Err(())
+                        Err(e)
                     }
                 },
-                Connected(_) => {
-                    log::error!("Already connected, discarding new connection");
-                    Err(())
-                }
-            };
-            let _ = tx.send(result);
-            Ok(())
+                Connected(_) => panic!("A connected state shouldn't be attempting to reconnect"),
+            }
         });
 
-        let mut executor = DefaultExecutor::current();
-        executor
-            .spawn(Box::new(connect_f))
-            .expect("Cannot spawn future");
-
-        Either::A(rx.map_err(|_| ()).and_then(future::result))
+        Either::A(connect_f)
     }
 }
 
-impl<A, T, RE, CE> Clone for Reconnect<A, T, RE, CE> {
+impl<A, T> Clone for Reconnect<A, T> {
     fn clone(&self) -> Self {
         Reconnect {
             state: self.state.clone(),

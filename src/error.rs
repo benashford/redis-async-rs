@@ -30,8 +30,8 @@ pub enum Error {
     /// A remote error
     Remote(String),
 
-    /// End of stream - a connection is broken, or could not be established in the first place
-    EndOfStream,
+    /// Error creating a connection, or an error with a connection being closed unexpectedly
+    Connection(ConnectionReason),
 
     /// An unexpected error.  In this context "unexpected" means
     /// "unexpected because we check ahead of time", it used to maintain the type signature of
@@ -80,7 +80,9 @@ impl error::Error for Error {
             Error::IO(ref err) => err.description(),
             Error::RESP(ref s, _) => s,
             Error::Remote(ref s) => s,
-            Error::EndOfStream => "End of Stream",
+            Error::Connection(ConnectionReason::Connected) => "Connection already established",
+            Error::Connection(ConnectionReason::Connecting) => "Connection in progress",
+            Error::Connection(ConnectionReason::NotConnected) => "Connection has been closed",
             Error::Unexpected(ref err) => err,
         }
     }
@@ -91,7 +93,7 @@ impl error::Error for Error {
             Error::IO(ref err) => Some(err),
             Error::RESP(_, _) => None,
             Error::Remote(_) => None,
-            Error::EndOfStream => None,
+            Error::Connection(_) => None,
             Error::Unexpected(_) => None,
         }
     }
@@ -102,4 +104,18 @@ impl fmt::Display for Error {
         use std::error::Error;
         fmt::Display::fmt(self.description(), f)
     }
+}
+
+/// Details of a `ConnectionError`
+#[derive(Debug)]
+pub enum ConnectionReason {
+    /// An attempt to use a connection while it is in the "connecting" state, clients should try
+    /// again
+    Connecting,
+    /// An attempt was made to reconnect after a connection was established, clients should try
+    /// again
+    Connected,
+    /// The connection is not currently connected, the connection will reconnect asynchronously,
+    /// clients should try again
+    NotConnected,
 }

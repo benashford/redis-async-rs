@@ -173,8 +173,7 @@ impl Future for PairedConnectionInner {
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Clone)]
 pub struct PairedConnection {
-    out_tx_c:
-        Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>, error::Error, error::Error>,
+    out_tx_c: Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>,
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -224,7 +223,6 @@ pub fn paired_connect(
         )
     })
     .map(|out_tx_c| PairedConnection { out_tx_c })
-    .map_err(|()| error::Error::EndOfStream)
 }
 
 impl PairedConnection {
@@ -254,10 +252,7 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        let send_f = self
-            .out_tx_c
-            .do_work((msg, tx))
-            .map_err(|_| error::Error::EndOfStream);
+        let send_f = self.out_tx_c.do_work((msg, tx));
 
         Either::A(send_f.and_then(|_| {
             rx.then(|v| match v {
