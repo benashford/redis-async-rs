@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Ben Ashford
+ * Copyright 2018-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -14,6 +14,8 @@ use futures::{
     future::{self, Either},
     Future,
 };
+
+use tokio_executor::{DefaultExecutor, Executor};
 
 use crate::error::{self, ConnectionReason};
 
@@ -62,8 +64,10 @@ where
     fn call_work(&self, t: &T, a: A) -> impl Future<Item = (), Error = error::Error> {
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
+            // TODO - check error type, only certain types of error should disconnect and reconnect...
             log::error!("Error in work_fn will force connection closed, next command will attempt to re-establish it: {}", e);
             reconnect.disconnect();
+            reconnect.reconnect_spawn();
             e
         })
     }
@@ -75,23 +79,22 @@ where
     }
 
     pub(crate) fn do_work(&self, a: A) -> impl Future<Item = (), Error = error::Error> {
-        let work_result_f = {
+        let rv = {
             let state = self.state.read().expect("Cannot obtain read lock");
             match *state {
-                NotConnected => Ok(()),
-                Connected(ref t) => Err(Either::A(self.call_work(t, a))),
-                Connecting => Err(Either::B(future::err(error::Error::Connection(
-                    ConnectionReason::Connecting,
-                )))),
+                NotConnected => Either::B(future::err(error::Error::Connection(
+                    ConnectionReason::NotConnected,
+                ))),
+                Connected(ref t) => return Either::A(self.call_work(t, a)),
+                Connecting => {
+                    return Either::B(future::err(error::Error::Connection(
+                        ConnectionReason::Connecting,
+                    )))
+                }
             }
         };
-        match work_result_f {
-            Ok(()) => Either::A(self.reconnect().then(|t| match t {
-                Ok(()) => Err(error::Error::Connection(ConnectionReason::NotConnected)),
-                Err(e) => Err(e),
-            })),
-            Err(fut) => Either::B(fut),
-        }
+        self.reconnect_spawn();
+        rv
     }
 
     /// Returns a future that completes when the connection is established or failed to establish
@@ -134,6 +137,17 @@ where
         });
 
         Either::A(connect_f)
+    }
+
+    fn reconnect_spawn(&self) {
+        let reconnect_f = self
+            .reconnect()
+            .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e)); // TODO - propagate this higher
+
+        let mut executor = DefaultExecutor::current();
+        executor
+            .spawn(Box::new(reconnect_f))
+            .expect("Cannot spawn asynchronous reconnection");
     }
 }
 
