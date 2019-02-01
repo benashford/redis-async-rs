@@ -8,7 +8,7 @@
  * except according to those terms.
  */
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use futures::{
     future::{self, Either},
@@ -51,6 +51,7 @@ where
 enum ReconnectState<T> {
     NotConnected,
     Connected(T),
+    ConnectionFailed(Mutex<Option<error::Error>>),
     Connecting,
 }
 
@@ -90,6 +91,14 @@ where
                     ConnectionReason::NotConnected,
                 ))),
                 Connected(ref t) => return Either::A(self.call_work(t, a)),
+                ConnectionFailed(ref e) => {
+                    let mut lock = e.lock().expect("Poisioned lock");
+                    let e = match lock.take() {
+                        Some(e) => e,
+                        None => error::Error::Connection(ConnectionReason::NotConnected),
+                    };
+                    return Either::B(future::err(e));
+                }
                 Connecting => {
                     return Either::B(future::err(error::Error::Connection(
                         ConnectionReason::Connecting,
@@ -116,7 +125,7 @@ where
                     ConnectionReason::Connecting,
                 )));
             }
-            NotConnected => (),
+            NotConnected | ConnectionFailed(_) => (),
         }
         *state = ReconnectState::Connecting;
 
@@ -132,10 +141,13 @@ where
                     }
                     Err(e) => {
                         log::error!("Connection cannot be established: {}", e);
-                        *state = NotConnected;
-                        Err(e)
+                        *state = ConnectionFailed(Mutex::new(Some(e)));
+                        Err(error::Error::Connection(ConnectionReason::ConnectionFailed))
                     }
                 },
+                ConnectionFailed(_) => {
+                    panic!("The connection state wasn't reset before connecting")
+                }
                 Connected(_) => panic!("A connected state shouldn't be attempting to reconnect"),
             }
         });

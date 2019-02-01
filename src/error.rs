@@ -82,6 +82,9 @@ impl error::Error for Error {
             Error::Remote(ref s) => s,
             Error::Connection(ConnectionReason::Connected) => "Connection already established",
             Error::Connection(ConnectionReason::Connecting) => "Connection in progress",
+            Error::Connection(ConnectionReason::ConnectionFailed) => {
+                "The last attempt to establish a connection failed"
+            }
             Error::Connection(ConnectionReason::NotConnected) => "Connection has been closed",
             Error::Unexpected(ref err) => err,
         }
@@ -115,6 +118,9 @@ pub enum ConnectionReason {
     /// An attempt was made to reconnect after a connection was established, clients should try
     /// again
     Connected,
+    /// Connection failed - this can be returned from a call to reconnect, the actual error will be
+    /// sent to the client at the next call
+    ConnectionFailed,
     /// The connection is not currently connected, the connection will reconnect asynchronously,
     /// clients should try again
     NotConnected,
