@@ -64,10 +64,14 @@ where
     fn call_work(&self, t: &T, a: A) -> impl Future<Item = (), Error = error::Error> {
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
-            // TODO - check error type, only certain types of error should disconnect and reconnect...
-            log::error!("Error in work_fn will force connection closed, next command will attempt to re-establish it: {}", e);
-            reconnect.disconnect();
-            reconnect.reconnect_spawn();
+            match e {
+                error::Error::IO(_) | error::Error::Internal(_) | error::Error::Unexpected(_) => {
+                    log::error!("Error in work_fn will force connection closed, next command will attempt to re-establish it: {}", e);
+                    reconnect.disconnect();
+                    reconnect.reconnect_spawn();
+                }
+                _ => ()
+            }
             e
         })
     }
@@ -89,7 +93,7 @@ where
                 Connecting => {
                     return Either::B(future::err(error::Error::Connection(
                         ConnectionReason::Connecting,
-                    )))
+                    )));
                 }
             }
         };
