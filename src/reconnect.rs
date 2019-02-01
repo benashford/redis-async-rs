@@ -66,7 +66,7 @@ where
         let reconnect = self.clone();
         (self.work_fn)(t, a).map_err(move |e| {
             match e {
-                error::Error::IO(_) | error::Error::Internal(_) | error::Error::Unexpected(_) => {
+                error::Error::IO(_) | error::Error::Unexpected(_) => {
                     log::error!("Error in work_fn will force connection closed, next command will attempt to re-establish it: {}", e);
                     reconnect.disconnect();
                     reconnect.reconnect_spawn();
