@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -168,7 +168,7 @@ impl Future for PairedConnectionInner {
 type SendPayload = (resp::RespValue, oneshot::Sender<resp::RespValue>);
 
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PairedConnection {
     out_tx_c:
         Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>, error::Error, error::Error>,
@@ -209,7 +209,8 @@ pub fn paired_connect(
                 Box::new(con_f)
             },
         )
-    }).map(|out_tx_c| PairedConnection { out_tx_c })
+    })
+    .map(|out_tx_c| PairedConnection { out_tx_c })
     .map_err(|()| error::Error::EndOfStream)
 }
 
@@ -235,7 +236,7 @@ impl PairedConnection {
             _ => {
                 return Either::B(future::err(error::internal(
                     "Command must be a RespValue::Array",
-                )))
+                )));
             }
         }
 

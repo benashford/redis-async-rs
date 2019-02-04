@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Ben Ashford
+ * Copyright 2018-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -9,6 +9,7 @@
  */
 
 use std::error as std_error;
+use std::fmt;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -34,6 +35,15 @@ pub(crate) struct Reconnect<A, T, RE, CE> {
     conn_fn: Arc<Fn() -> Box<Future<Item = T, Error = CE> + Send> + Send + Sync>,
 }
 
+impl<A, T, RE, CE> fmt::Debug for Reconnect<A, T, RE, CE>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Reconnect {{ state: {:?} }}", self.state)
+    }
+}
+
 pub(crate) fn reconnect<A, T, RE, CE, W, C>(
     w: W,
     c: C,
@@ -55,6 +65,7 @@ where
     r.reconnect().map(|()| r)
 }
 
+#[derive(Debug)]
 enum ReconnectState<T> {
     NotConnected,
     Connected(T),
