@@ -48,6 +48,7 @@ where
     r.reconnect().map(|()| r)
 }
 
+#[derive(Debug)]
 enum ReconnectState<T> {
     NotConnected,
     Connected(T),

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -261,7 +261,7 @@ impl Future for PubsubConnectionInner {
 }
 
 /// A shareable reference to subscribe to PUBSUB topics
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PubsubConnection {
     out_tx_c: Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>,
 }

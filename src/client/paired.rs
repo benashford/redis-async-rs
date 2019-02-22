@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -171,7 +171,7 @@ impl Future for PairedConnectionInner {
 }
 
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PairedConnection {
     out_tx_c: Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>,
 }
