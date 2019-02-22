@@ -8,7 +8,10 @@
  * except according to those terms.
  */
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::{
+    fmt,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use futures::{
     future::{self, Either},
@@ -27,6 +30,19 @@ pub(crate) struct Reconnect<A, T> {
 
     work_fn: Arc<WorkFn<T, A>>,
     conn_fn: Arc<ConnFn<T>>,
+}
+
+impl<A, T> fmt::Debug for Reconnect<A, T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Reconnect")
+            .field("state", &self.state)
+            .field("work_fn", &String::from("REDACTED"))
+            .field("conn_fn", &String::from("REDACTED"))
+            .finish()
+    }
 }
 
 pub(crate) fn reconnect<A, T, W, C>(
