@@ -7,6 +7,7 @@ readme = "README.md"
 description = "An asynchronous futures based Redis client for Rust using Tokio"
 repository = "https://github.com/benashford/redis-async-rs"
 keywords = ["redis", "tokio"]
+edition = "2018"
 
 [dependencies]
 bytes = "0.4.5"

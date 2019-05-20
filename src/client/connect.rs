@@ -17,7 +17,7 @@ use tokio_codec::{Decoder, Framed};
 
 use tokio_tcp::TcpStream;
 
-use resp;
+use crate::resp;
 
 pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 
