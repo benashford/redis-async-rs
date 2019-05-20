@@ -291,6 +291,7 @@ impl Stream for PubsubStream {
 
 impl Drop for PubsubStream {
     fn drop(&mut self) {
-        self.con.unsubscribe(self.topic.as_ref());
+        let topic: &str = self.topic.as_ref();
+        self.con.unsubscribe(topic);
     }
 }
