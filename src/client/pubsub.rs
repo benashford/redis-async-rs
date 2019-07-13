@@ -21,9 +21,9 @@ use futures::{
 use tokio_executor::{DefaultExecutor, Executor};
 
 use super::connect::{connect, RespConnection};
-use error;
-use reconnect::{reconnect, Reconnect};
-use resp::{self, FromResp};
+use crate::error;
+use crate::reconnect::{reconnect, Reconnect};
+use crate::resp::{self, FromResp};
 
 #[derive(Debug)]
 enum PubsubEvent {

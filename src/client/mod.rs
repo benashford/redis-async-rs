@@ -40,8 +40,8 @@ mod test {
 
     use tokio;
 
-    use error;
-    use resp;
+    use crate::error;
+    use crate::resp;
 
     fn run_and_wait<R, E, F>(f: F) -> Result<R, E>
     where

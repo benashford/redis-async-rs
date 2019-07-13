@@ -14,7 +14,7 @@ use std::{error, fmt, io};
 
 use futures::sync::{mpsc, oneshot};
 
-use resp;
+use crate::resp;
 
 #[derive(Debug)]
 pub enum Error {
