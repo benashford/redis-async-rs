@@ -64,12 +64,23 @@ where
     r.reconnect().map(|()| r)
 }
 
-#[derive(Debug)]
 enum ReconnectState<T> {
     NotConnected,
     Connected(T),
     ConnectionFailed(Mutex<Option<error::Error>>),
     Connecting,
+}
+
+impl<T> fmt::Debug for ReconnectState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ReconnectState::")?;
+        match self {
+            NotConnected => write!(f, "NotConnected"),
+            Connected(_) => write!(f, "Connected"),
+            ConnectionFailed(_) => write!(f, "ConnectionFailed"),
+            Connecting => write!(f, "Connecting"),
+        }
+    }
 }
 
 use self::ReconnectState::*;
@@ -114,7 +125,7 @@ where
                         Some(e) => e,
                         None => error::Error::Connection(ConnectionReason::NotConnected),
                     };
-                    return Either::B(future::err(e));
+                    Either::B(future::err(e))
                 }
                 Connecting => {
                     return Either::B(future::err(error::Error::Connection(
@@ -131,6 +142,9 @@ where
     /// used only for timing.
     fn reconnect(&self) -> impl Future<Item = (), Error = error::Error> {
         let mut state = self.state.write().expect("Cannot obtain write lock");
+
+        log::info!("Attempting to reconnect, current state: {:?}", *state);
+
         match *state {
             Connected(_) => {
                 return Either::B(future::err(error::Error::Connection(
