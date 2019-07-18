@@ -19,8 +19,7 @@ use bytes::{BufMut, BytesMut};
 
 use tokio_io::codec::{Decoder, Encoder};
 
-use super::error;
-use super::error::Error;
+use super::error::{self, Error};
 
 /// A single RESP value, this owns the data that is read/to-be written to Redis.
 ///
@@ -57,16 +56,17 @@ impl RespValue {
 
     /// Convenience function for building dynamic Redis commands with variable numbers of
     /// arguments, e.g. RPUSH
-    pub fn append<T>(mut self, other: &mut Vec<T>) -> Self
+    ///
+    /// This will panic if called for anything other than arrays
+    pub fn append<T>(mut self, other: impl IntoIterator<Item = T>) -> Self
     where
         T: Into<RespValue>,
     {
         match self {
             RespValue::Array(ref mut vals) => {
-                let mut new_vals = other.drain(..).map(|t| t.into()).collect();
-                vals.append(&mut new_vals);
+                vals.extend(other.into_iter().map(|t| t.into()));
             }
-            _ => warn!("Can only append to arrays"),
+            _ => panic!("Can only append to arrays"),
         }
         self
     }
@@ -124,6 +124,7 @@ impl FromResp for i64 {
 macro_rules! impl_fromresp_integers {
     ($($int_ty:ident),* $(,)*) => {
         $(
+            #[allow(clippy::cast_lossless)]
             impl FromResp for $int_ty {
                 fn from_resp_int(resp: RespValue) -> Result<Self, Error> {
                     i64::from_resp_int(resp).and_then(|x| {
@@ -299,6 +300,18 @@ where
 /// fn main() {
 ///     let value = format!("something_{}", 123);
 ///     resp_array!["SET", "key_name", value];
+/// }
+/// ```
+///
+/// For variable length Redis commands:
+///
+/// ```
+/// #[macro_use]
+/// extern crate redis_async;
+///
+/// fn main() {
+///     let data = vec!["data", "from", "somewhere", "else"];
+///     let command = resp_array!["RPUSH", "mykey"].append(data);
 /// }
 /// ```
 #[macro_export]
@@ -487,7 +500,7 @@ fn scan_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, &[u8])>
                 return Err(parse_error(format!(
                     "Unexpected byte in size_string: {}",
                     val
-                )))
+                )));
             }
         }
         pos += 1;
@@ -648,6 +661,35 @@ mod tests {
     use tokio_io::codec::{Decoder, Encoder};
 
     use super::{Error, FromResp, RespCodec, RespValue};
+
+    fn obj_to_bytes(obj: RespValue) -> Vec<u8> {
+        let mut bytes = BytesMut::new();
+        let mut codec = RespCodec;
+        codec.encode(obj, &mut bytes).unwrap();
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn test_resp_array_macro() {
+        let resp_object = resp_array!["SET", "x"];
+        let bytes = obj_to_bytes(resp_object);
+        assert_eq!(b"*2\r\n$3\r\nSET\r\n$1\r\nx\r\n", bytes.as_slice());
+
+        let resp_object = resp_array!["RPUSH", "wyz"].append(vec!["a", "b"]);
+        let bytes = obj_to_bytes(resp_object);
+        assert_eq!(
+            &b"*4\r\n$5\r\nRPUSH\r\n$3\r\nwyz\r\n$1\r\na\r\n$1\r\nb\r\n"[..],
+            bytes.as_slice()
+        );
+
+        let vals = vec![String::from("a"), String::from("b")];
+        let resp_object = resp_array!["RPUSH", "xyz"].append(&vals);
+        let bytes = obj_to_bytes(resp_object);
+        assert_eq!(
+            &b"*4\r\n$5\r\nRPUSH\r\n$3\r\nxyz\r\n$1\r\na\r\n$1\r\nb\r\n"[..],
+            bytes.as_slice()
+        );
+    }
 
     #[test]
     fn test_bulk_string() {
