@@ -327,7 +327,11 @@ impl PubsubConnection {
             underlying: rx,
             con: self.clone(),
         };
-        do_work_f.and_then(|()| signal_r.map(|_| stream).map_err(|e| e.into()))
+        do_work_f.and_then(|()| {
+            signal_r
+                .map(|_| stream)
+                .map_err(|_| error::internal("Subscription failed, try again later..."))
+        })
     }
 
     /// Tells the client to unsubscribe from a particular topic. This will return immediately, the

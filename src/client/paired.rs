@@ -257,7 +257,9 @@ impl PairedConnection {
         Either::A(send_f.and_then(|_| {
             rx.then(|v| match v {
                 Ok(v) => future::result(T::from_resp(v)),
-                Err(e) => future::err(e.into()),
+                Err(_) => future::err(error::internal(
+                    "Connection closed before response received",
+                )),
             })
         }))
     }

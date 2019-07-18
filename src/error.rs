@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -12,7 +12,7 @@
 
 use std::{error, fmt, io};
 
-use futures::sync::{mpsc, oneshot};
+use futures::sync::mpsc;
 
 use crate::resp;
 
@@ -58,12 +58,6 @@ pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
         Error::IO(err)
-    }
-}
-
-impl From<oneshot::Canceled> for Error {
-    fn from(err: oneshot::Canceled) -> Error {
-        Error::Unexpected(format!("Oneshot was cancelled before use: {}", err))
     }
 }
 
