@@ -56,6 +56,8 @@ impl RespValue {
 
     /// Convenience function for building dynamic Redis commands with variable numbers of
     /// arguments, e.g. RPUSH
+    ///
+    /// This will panic if called for anything other than arrays
     pub fn append<T>(mut self, other: impl IntoIterator<Item = T>) -> Self
     where
         T: Into<RespValue>,
@@ -64,7 +66,7 @@ impl RespValue {
             RespValue::Array(ref mut vals) => {
                 vals.extend(other.into_iter().map(|t| t.into()));
             }
-            _ => log::warn!("Can only append to arrays"),
+            _ => panic!("Can only append to arrays"),
         }
         self
     }

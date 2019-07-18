@@ -175,7 +175,7 @@ where
     fn reconnect_spawn(&self) {
         let reconnect_f = self
             .reconnect()
-            .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e)); // TODO - propagate this higher
+            .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e));
 
         let mut executor = DefaultExecutor::current();
         executor

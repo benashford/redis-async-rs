@@ -74,7 +74,7 @@ impl PairedConnectionInner {
     ) -> Self {
         PairedConnectionInner {
             connection: con,
-            out_rx: out_rx,
+            out_rx,
             waiting: VecDeque::new(),
             send_status: SendStatus::Ok,
         }
