@@ -22,8 +22,9 @@ use tokio_executor::{DefaultExecutor, Executor};
 
 use crate::error::{self, ConnectionReason};
 
-type WorkFn<T, A> = Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync;
-type ConnFn<T> = Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync;
+type WorkFn<T, A> =
+    dyn Fn(&T, A) -> Box<dyn Future<Item = (), Error = error::Error> + Send> + Send + Sync;
+type ConnFn<T> = dyn Fn() -> Box<dyn Future<Item = T, Error = error::Error> + Send> + Send + Sync;
 
 pub(crate) struct Reconnect<A, T> {
     state: Arc<RwLock<ReconnectState<T>>>,
@@ -51,8 +52,8 @@ pub(crate) fn reconnect<A, T, W, C>(
 ) -> impl Future<Item = Reconnect<A, T>, Error = error::Error>
 where
     A: Send + 'static,
-    W: Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync + 'static,
-    C: Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync + 'static,
+    W: Fn(&T, A) -> Box<dyn Future<Item = (), Error = error::Error> + Send> + Send + Sync + 'static,
+    C: Fn() -> Box<dyn Future<Item = T, Error = error::Error> + Send> + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
 {
     let r = Reconnect {
