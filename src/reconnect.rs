@@ -11,6 +11,7 @@
 use std::{
     fmt,
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 
 use futures::{
@@ -19,6 +20,7 @@ use futures::{
 };
 
 use tokio_executor::{DefaultExecutor, Executor};
+use tokio_timer::Timeout;
 
 use crate::error::{self, ConnectionReason};
 
@@ -85,6 +87,9 @@ impl<T> fmt::Debug for ReconnectState<T> {
 }
 
 use self::ReconnectState::*;
+
+const CONNECTION_TIMEOUT_SECONDS: u64 = 10;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_SECONDS);
 
 impl<A, T> Reconnect<A, T>
 where
@@ -162,7 +167,21 @@ where
         *state = ReconnectState::Connecting;
 
         let reconnect = self.clone();
-        let connect_f = (self.conn_fn)().then(move |t| {
+        let connect_f = Timeout::new((self.conn_fn)(), CONNECTION_TIMEOUT).map_err(|e| {
+            if e.is_inner() {
+                e.into_inner().unwrap()
+            } else if e.is_elapsed() {
+                error::internal(format!(
+                    "Connection timed-out after {} seconds",
+                    CONNECTION_TIMEOUT_SECONDS
+                ))
+            } else if e.is_inner() {
+                error::internal(format!("Error timing-out connection: {}", e))
+            } else {
+                unreachable!("A surprise fourth type of timer error has occurred")
+            }
+        });
+        let connect_f = connect_f.then(move |t| {
             let mut state = reconnect.state.write().expect("Cannot obtain write lock");
             match *state {
                 NotConnected | Connecting => match t {
