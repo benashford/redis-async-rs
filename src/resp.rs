@@ -10,14 +10,15 @@
 
 //! An implementation of the RESP protocol
 
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash};
-use std::io;
-use std::str;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, Hash},
+    io, str,
+};
 
 use bytes::{BufMut, BytesMut};
 
-// use tokio_io::codec::{Decoder, Encoder};
+use tokio_codec::{Decoder, Encoder};
 
 use super::error::{self, Error};
 
@@ -434,42 +435,42 @@ fn write_simple_string(symb: u8, string: &str, buf: &mut BytesMut) {
     write_rn(buf);
 }
 
-// impl Encoder for RespCodec {
-//     type Item = RespValue;
-//     type Error = io::Error;
+impl Encoder for RespCodec {
+    type Item = RespValue;
+    type Error = io::Error;
 
-//     fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
-//         match msg {
-//             RespValue::Nil => {
-//                 write_header(b'$', -1, buf);
-//             }
-//             RespValue::Array(ary) => {
-//                 write_header(b'*', ary.len() as i64, buf);
-//                 for v in ary {
-//                     self.encode(v, buf)?;
-//                 }
-//             }
-//             RespValue::BulkString(bstr) => {
-//                 let len = bstr.len();
-//                 write_header(b'$', len as i64, buf);
-//                 check_and_reserve(buf, len + 2);
-//                 buf.extend(bstr);
-//                 write_rn(buf);
-//             }
-//             RespValue::Error(ref string) => {
-//                 write_simple_string(b'-', string, buf);
-//             }
-//             RespValue::Integer(val) => {
-//                 // Simple integer are just the header
-//                 write_header(b':', val, buf);
-//             }
-//             RespValue::SimpleString(ref string) => {
-//                 write_simple_string(b'+', string, buf);
-//             }
-//         }
-//         Ok(())
-//     }
-// }
+    fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
+        match msg {
+            RespValue::Nil => {
+                write_header(b'$', -1, buf);
+            }
+            RespValue::Array(ary) => {
+                write_header(b'*', ary.len() as i64, buf);
+                for v in ary {
+                    self.encode(v, buf)?;
+                }
+            }
+            RespValue::BulkString(bstr) => {
+                let len = bstr.len();
+                write_header(b'$', len as i64, buf);
+                check_and_reserve(buf, len + 2);
+                buf.extend(bstr);
+                write_rn(buf);
+            }
+            RespValue::Error(ref string) => {
+                write_simple_string(b'-', string, buf);
+            }
+            RespValue::Integer(val) => {
+                // Simple integer are just the header
+                write_header(b':', val, buf);
+            }
+            RespValue::SimpleString(ref string) => {
+                write_simple_string(b'+', string, buf);
+            }
+        }
+        Ok(())
+    }
+}
 
 #[inline]
 fn parse_error(message: String) -> Error {
@@ -636,21 +637,21 @@ fn decode(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     }
 }
 
-// impl Decoder for RespCodec {
-//     type Item = RespValue;
-//     type Error = Error;
+impl Decoder for RespCodec {
+    type Item = RespValue;
+    type Error = Error;
 
-//     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-//         match decode(buf, 0) {
-//             Ok(None) => Ok(None),
-//             Ok(Some((pos, item))) => {
-//                 buf.split_to(pos);
-//                 Ok(Some(item))
-//             }
-//             Err(e) => Err(e),
-//         }
-//     }
-// }
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match decode(buf, 0) {
+            Ok(None) => Ok(None),
+            Ok(Some((pos, item))) => {
+                buf.split_to(pos);
+                Ok(Some(item))
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

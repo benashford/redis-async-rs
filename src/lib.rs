@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -52,6 +52,8 @@
 //! [`subscribe`](client/pubsub/struct.PubsubConnection.html#method.subscribe) function that takes a topic as a parameter and
 //! returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published
 //! to that topic.
+
+#![feature(async_await)]
 
 #[macro_use]
 pub mod resp;
