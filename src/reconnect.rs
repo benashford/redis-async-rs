@@ -11,6 +11,7 @@
 use std::{
     fmt,
     sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 
 use futures::{
@@ -19,11 +20,13 @@ use futures::{
 };
 
 use tokio_executor::{DefaultExecutor, Executor};
+use tokio_timer::Timeout;
 
 use crate::error::{self, ConnectionReason};
 
-type WorkFn<T, A> = Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync;
-type ConnFn<T> = Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync;
+type WorkFn<T, A> =
+    dyn Fn(&T, A) -> Box<dyn Future<Item = (), Error = error::Error> + Send> + Send + Sync;
+type ConnFn<T> = dyn Fn() -> Box<dyn Future<Item = T, Error = error::Error> + Send> + Send + Sync;
 
 pub(crate) struct Reconnect<A, T> {
     state: Arc<RwLock<ReconnectState<T>>>,
@@ -51,8 +54,8 @@ pub(crate) fn reconnect<A, T, W, C>(
 ) -> impl Future<Item = Reconnect<A, T>, Error = error::Error>
 where
     A: Send + 'static,
-    W: Fn(&T, A) -> Box<Future<Item = (), Error = error::Error> + Send> + Send + Sync + 'static,
-    C: Fn() -> Box<Future<Item = T, Error = error::Error> + Send> + Send + Sync + 'static,
+    W: Fn(&T, A) -> Box<dyn Future<Item = (), Error = error::Error> + Send> + Send + Sync + 'static,
+    C: Fn() -> Box<dyn Future<Item = T, Error = error::Error> + Send> + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
 {
     let r = Reconnect {
@@ -84,6 +87,9 @@ impl<T> fmt::Debug for ReconnectState<T> {
 }
 
 use self::ReconnectState::*;
+
+const CONNECTION_TIMEOUT_SECONDS: u64 = 10;
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_SECONDS);
 
 impl<A, T> Reconnect<A, T>
 where
@@ -161,7 +167,21 @@ where
         *state = ReconnectState::Connecting;
 
         let reconnect = self.clone();
-        let connect_f = (self.conn_fn)().then(move |t| {
+        let connect_f = Timeout::new((self.conn_fn)(), CONNECTION_TIMEOUT).map_err(|e| {
+            if e.is_inner() {
+                e.into_inner().unwrap()
+            } else if e.is_elapsed() {
+                error::internal(format!(
+                    "Connection timed-out after {} seconds",
+                    CONNECTION_TIMEOUT_SECONDS
+                ))
+            } else if e.is_inner() {
+                error::internal(format!("Error timing-out connection: {}", e))
+            } else {
+                unreachable!("A surprise fourth type of timer error has occurred")
+            }
+        });
+        let connect_f = connect_f.then(move |t| {
             let mut state = reconnect.state.write().expect("Cannot obtain write lock");
             match *state {
                 NotConnected | Connecting => match t {

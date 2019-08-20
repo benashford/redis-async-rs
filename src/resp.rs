@@ -494,7 +494,7 @@ fn scan_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, &[u8])>
         match (at_end, buf[pos]) {
             (true, b'\n') => return Ok(Some((pos + 1, &buf[idx..pos - 1]))),
             (false, b'\r') => at_end = true,
-            (false, b'0'...b'9') => (),
+            (false, b'0'..=b'9') => (),
             (false, b'-') => (),
             (_, val) => {
                 return Err(parse_error(format!(
