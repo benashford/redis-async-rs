@@ -18,6 +18,7 @@ use std::{
 };
 
 use futures_channel::{mpsc, oneshot};
+use futures_sink::Sink;
 use futures_util::{future, stream::StreamExt, try_future::TryFutureExt};
 
 use tokio_executor::{DefaultExecutor, Executor};
@@ -82,18 +83,23 @@ impl PairedConnectionInner {
         }
     }
 
-    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
-        unimplemented!()
-        // match self.connection.start_send(msg)? {
-        //     AsyncSink::Ready => {
-        //         self.send_status = SendStatus::Ok;
-        //         Ok(true)
-        //     }
-        //     AsyncSink::NotReady(msg) => {
-        //         self.send_status = SendStatus::Full(msg);
-        //         Ok(false)
-        //     }
-        // }
+    fn impl_start_send(
+        &mut self,
+        cx: &mut Context,
+        msg: resp::RespValue,
+    ) -> Result<bool, error::Error> {
+        match Pin::new(&mut self.connection).poll_ready(cx) {
+            Poll::Ready(Ok(())) => (),
+            Poll::Ready(Err(e)) => return Err(e.into()),
+            Poll::Pending => {
+                self.send_status = SendStatus::Full(msg);
+                return Ok(false);
+            }
+        }
+
+        self.send_status = SendStatus::Ok;
+        Pin::new(&mut self.connection).start_send(msg)?;
+        Ok(true)
     }
 
     fn poll_start_send(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
@@ -119,34 +125,32 @@ impl PairedConnectionInner {
             },
         };
 
-        self.impl_start_send(message)
+        self.impl_start_send(cx, message)
     }
 
-    fn poll_complete(&mut self) -> Result<(), error::Error> {
-        unimplemented!()
-        // self.connection.poll_complete()?;
-        // Ok(())
+    fn poll_complete(&mut self, cx: &mut Context) -> Result<(), error::Error> {
+        let _ = Pin::new(&mut self.connection).poll_flush(cx)?;
+        Ok(())
     }
 
-    fn receive(&mut self) -> Result<ReceiveStatus, error::Error> {
-        unimplemented!()
-        // if let SendStatus::End = self.send_status {
-        //     if self.waiting.is_empty() {
-        //         return Ok(ReceiveStatus::ReadyFinished);
-        //     }
-        // }
-        // match self.connection.poll()? {
-        //     Async::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
-        //     Async::Ready(Some(msg)) => {
-        //         let tx = match self.waiting.pop_front() {
-        //             Some(tx) => tx,
-        //             None => panic!("Received unexpected message: {:?}", msg),
-        //         };
-        //         let _ = tx.send(msg);
-        //         Ok(ReceiveStatus::ReadyMore)
-        //     }
-        //     Async::NotReady => Ok(ReceiveStatus::NotReady),
-        // }
+    fn receive(&mut self, cx: &mut Context) -> Result<ReceiveStatus, error::Error> {
+        if let SendStatus::End = self.send_status {
+            if self.waiting.is_empty() {
+                return Ok(ReceiveStatus::ReadyFinished);
+            }
+        }
+        match self.connection.poll_next_unpin(cx) {
+            Poll::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
+            Poll::Ready(Some(msg)) => {
+                let tx = match self.waiting.pop_front() {
+                    Some(tx) => tx,
+                    None => panic!("Received unexpected message: {:?}", msg),
+                };
+                let _ = tx.send(msg?);
+                Ok(ReceiveStatus::ReadyMore)
+            }
+            Poll::Pending => Ok(ReceiveStatus::NotReady),
+        }
     }
 
     fn handle_error(&self, e: &error::Error) {
@@ -170,13 +174,13 @@ impl Future for PairedConnectionInner {
             };
         }
 
-        if let Err(ref e) = mut_self.poll_complete() {
+        if let Err(ref e) = mut_self.poll_complete(cx) {
             return Poll::Ready(mut_self.handle_error(e));
         };
 
         // If there's something to receive, receive it...
         loop {
-            match mut_self.receive() {
+            match mut_self.receive(cx) {
                 Ok(ReceiveStatus::NotReady) => return Poll::Pending,
                 Ok(ReceiveStatus::ReadyMore) => (),
                 Ok(ReceiveStatus::ReadyFinished) => return Poll::Ready(()),
