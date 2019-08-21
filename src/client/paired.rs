@@ -19,7 +19,7 @@ use std::{
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{future, stream::StreamExt, try_future::TryFutureExt};
+use futures_util::{future, stream::StreamExt};
 
 use tokio_executor::{DefaultExecutor, Executor};
 
