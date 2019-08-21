@@ -42,7 +42,6 @@ pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, io::Error> {
 #[cfg(test)]
 mod test {
     use futures_util::{
-        future,
         sink::SinkExt,
         stream::{self, StreamExt},
     };

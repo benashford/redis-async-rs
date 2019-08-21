@@ -25,11 +25,10 @@ pub mod connect;
 pub mod paired;
 pub mod pubsub;
 
-// pub use self::{
-//     connect::connect,
-//     paired::{paired_connect, PairedConnection},
-//     pubsub::{pubsub_connect, PubsubConnection},
-// };
+pub use self::connect::connect;
+
+// paired::{paired_connect, PairedConnection},
+// pubsub::{pubsub_connect, PubsubConnection},
 
 #[cfg(test)]
 mod test {

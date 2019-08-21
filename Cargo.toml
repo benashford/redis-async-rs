@@ -20,4 +20,5 @@ tokio-timer = "0.3.0-alpha.2"
 
 [dev-dependencies]
 env_logger = "0.6"
+futures-preview = "=0.3.0-alpha.18"
 tokio = "0.2.0-alpha.2"
