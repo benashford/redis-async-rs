@@ -313,4 +313,42 @@ mod test {
         assert_eq!(result_1, "TEST");
         assert_eq!(result_2, "123");
     }
+
+    #[tokio::test]
+    async fn complex_paired_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connection = super::paired_connect(&addr)
+            .await
+            .expect("Cannot establish connection");
+
+        let value: String = connection
+            .send(resp_array!["INCR", "CTR"])
+            .await
+            .expect("Cannot increment counter");
+        let result: String = connection
+            .send(resp_array!["SET", "LASTCTR", value])
+            .await
+            .expect("Cannot set value");
+
+        assert_eq!(result, "OK");
+    }
+
+    #[tokio::test]
+    async fn sending_a_lot_of_data_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connection = super::paired_connect(&addr)
+            .await
+            .expect("Cannot connect to Redis");
+        let mut futures = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            let key = format!("X_{}", i);
+            connection.send_and_forget(resp_array!["SET", &key, i.to_string()]);
+            futures.push(connection.send(resp_array!["GET", key]));
+        }
+        let last_future = futures.remove(999);
+        let result: String = last_future.await.expect("Cannot wait for result");
+        assert_eq!(result, "999");
+    }
 }
