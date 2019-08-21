@@ -12,7 +12,7 @@
 
 use std::{error, fmt, io};
 
-// use futures::sync::mpsc;
+use futures_channel::mpsc;
 
 use crate::resp;
 
@@ -61,11 +61,11 @@ impl From<io::Error> for Error {
     }
 }
 
-// impl<T: 'static + Send> From<mpsc::SendError<T>> for Error {
-//     fn from(err: mpsc::SendError<T>) -> Error {
-//         Error::Unexpected(format!("Cannot write to channel: {}", err))
-//     }
-// }
+impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
+    fn from(err: mpsc::TrySendError<T>) -> Error {
+        Error::Unexpected(format!("Cannot write to channel: {}", err))
+    }
+}
 
 impl error::Error for Error {
     fn description(&self) -> &str {
