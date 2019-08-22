@@ -175,7 +175,7 @@ where
                     "Connection timed-out after {} seconds",
                     CONNECTION_TIMEOUT_SECONDS
                 ))
-            } else if e.is_inner() {
+            } else if e.is_timer() {
                 error::internal(format!("Error timing-out connection: {}", e))
             } else {
                 unreachable!("A surprise fourth type of timer error has occurred")
