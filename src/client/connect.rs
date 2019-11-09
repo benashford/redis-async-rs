@@ -65,32 +65,32 @@ mod test {
         assert_eq!(values[0], "TEST".into());
     }
 
-    // #[tokio::test]
-    // async fn complex_test() {
-    //     let addr = "127.0.0.1:6379".parse().unwrap();
+    #[tokio::test]
+    async fn complex_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
 
-    //     let mut connection = super::connect(&addr).await.expect("Cannot connect");
-    //     let mut ops = Vec::new();
-    //     ops.push(resp_array!["FLUSH"]);
-    //     ops.extend((0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]));
-    //     ops.push(resp_array!["SMEMBERS", "test_set"]);
-    //     let mut ops_stream = stream::iter(ops);
-    //     connection
-    //         .send_all(&mut ops_stream)
-    //         .await
-    //         .expect("Cannot send");
-    //     let values: Vec<_> = connection
-    //         .skip(1001)
-    //         .take(1)
-    //         .map(|r| r.expect("Unexpected invalid data"))
-    //         .collect()
-    //         .await;
+        let mut connection = super::connect(&addr).await.expect("Cannot connect");
+        let mut ops = Vec::new();
+        ops.push(resp_array!["FLUSH"]);
+        ops.extend((0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]));
+        ops.push(resp_array!["SMEMBERS", "test_set"]);
+        let mut ops_stream = stream::iter(ops).map(|o| Ok(o));
+        connection
+            .send_all(&mut ops_stream)
+            .await
+            .expect("Cannot send");
+        let values: Vec<_> = connection
+            .skip(1001)
+            .take(1)
+            .map(|r| r.expect("Unexpected invalid data"))
+            .collect()
+            .await;
 
-    //     assert_eq!(values.len(), 1);
-    //     let values = match &values[0] {
-    //         resp::RespValue::Array(ref values) => values.clone(),
-    //         _ => panic!("Not an array"),
-    //     };
-    //     assert_eq!(values.len(), 1000);
-    // }
+        assert_eq!(values.len(), 1);
+        let values = match &values[0] {
+            resp::RespValue::Array(ref values) => values.clone(),
+            _ => panic!("Not an array"),
+        };
+        assert_eq!(values.len(), 1000);
+    }
 }
