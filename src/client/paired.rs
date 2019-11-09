@@ -21,8 +21,6 @@ use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{future, stream::StreamExt};
 
-use tokio_executor::{DefaultExecutor, Executor};
-
 use super::connect::{connect, RespConnection};
 
 use crate::{
@@ -202,14 +200,8 @@ async fn inner_conn_fn(
     let connection = connect(&addr).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = Box::pin(PairedConnectionInner::new(connection, out_rx));
-    let mut executor = DefaultExecutor::current();
-    match executor.spawn(paired_connection_inner) {
-        Ok(_) => Ok(out_tx),
-        Err(e) => Err(error::Error::Internal(format!(
-            "Cannot spawn paired connection: {:?}",
-            e
-        ))),
-    }
+    tokio::spawn(paired_connection_inner);
+    Ok(out_tx)
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -280,16 +272,13 @@ impl PairedConnection {
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
-        let mut executor = DefaultExecutor::current();
         let send_f = self.send::<resp::RespValue>(msg);
         let forget_f = async {
             if let Err(e) = send_f.await {
                 log::error!("Error in send_and_forget: {}", e);
             }
         };
-        executor
-            .spawn(Box::pin(forget_f))
-            .expect("Cannot forget send_and_forget command");
+        tokio::spawn(forget_f);
     }
 }
 

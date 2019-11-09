@@ -12,15 +12,12 @@ edition = "2018"
 [dependencies]
 bytes = "0.4"
 log = "0.4"
-futures-channel-preview = "=0.3.0-alpha.18"
-futures-sink-preview = "=0.3.0-alpha.18"
-futures-util-preview = "=0.3.0-alpha.18"
-tokio-codec = "0.2.0-alpha.2"
-tokio-executor = "0.2.0-alpha.2"
-tokio-net = "0.2.0-alpha.2"
-tokio-timer = "0.3.0-alpha.2"
+futures-channel = "0.3"
+futures-sink = "0.3"
+futures-util = "0.3"
+tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
+tokio-util = { git = "https://github.com/tokio-rs/tokio.git", branch = "master" }
 
 [dev-dependencies]
-env_logger = "0.6"
-futures-preview = "=0.3.0-alpha.18"
-tokio = "0.2.0-alpha.2"
+env_logger = "0.7"
+futures = "0.3"

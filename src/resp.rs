@@ -18,7 +18,7 @@ use std::{
 
 use bytes::{BufMut, BytesMut};
 
-use tokio_codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 use super::error::{self, Error};
 
@@ -659,7 +659,7 @@ mod tests {
 
     use bytes::BytesMut;
 
-    use tokio_codec::{Decoder, Encoder};
+    use tokio_util::codec::{Decoder, Encoder};
 
     use super::{Error, FromResp, RespCodec, RespValue};
 

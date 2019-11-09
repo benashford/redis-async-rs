@@ -20,8 +20,7 @@ use std::{
 //     Future,
 // };
 
-use tokio_executor::{DefaultExecutor, Executor};
-use tokio_timer::Timeout;
+use tokio::time::Timeout;
 
 use crate::error::{self, ConnectionReason};
 

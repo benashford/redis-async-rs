@@ -18,8 +18,6 @@ use std::net::SocketAddr;
 //     Async, AsyncSink, Future, Poll, Sink, Stream,
 // };
 
-use tokio_executor::{DefaultExecutor, Executor};
-
 // use super::connect::{connect, RespConnection};
 
 // use crate::{
