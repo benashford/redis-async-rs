@@ -22,7 +22,7 @@ use futures_util::{
     future::{FutureExt, TryFutureExt},
     pin_mut,
     sink::Sink,
-    stream::{Fuse, StreamExt},
+    stream::{Fuse, Stream, StreamExt},
 };
 
 use super::connect::{connect, RespConnection};
@@ -261,9 +261,9 @@ pub struct PubsubConnection {
 }
 
 async fn inner_conn_fn(
-    addr: &SocketAddr,
+    addr: SocketAddr,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
-    let connection = connect(addr).await?;
+    let connection = connect(&addr).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     tokio::spawn(async {
         match PubsubConnectionInner::new(connection, out_rx).await {
@@ -274,92 +274,124 @@ async fn inner_conn_fn(
     Ok(out_tx)
 }
 
-// /// Used for Redis's PUBSUB functionality.
-// ///
-// /// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
-// /// connection is established; after the intial establishment, if the connection drops for any
-// /// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
-// /// any subscriptions will need to be re-subscribed.
-// pub async fn pubsub_connect(addr: &SocketAddr) -> Result<PubsubConnection, error::Error> {
-//     reconnect(
-//         |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
-//             con.unbounded_send(act).map_err(|e| e.into())
-//         },
-//         move || {
-//             let con_f = inner_conn_fn(addr);
-//             Box::new(Box::pin(con_f)) // TODO - do I need to box and pin? In this order?
-//         },
-//     )
-//     .map(|out_tx_c| PubsubConnection { out_tx_c })
-// }
+/// Used for Redis's PUBSUB functionality.
+///
+/// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
+/// connection is established; after the intial establishment, if the connection drops for any
+/// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
+/// any subscriptions will need to be re-subscribed.
+pub async fn pubsub_connect(addr: &SocketAddr) -> Result<PubsubConnection, error::Error> {
+    let addr = *addr;
+    let reconnecting_f = reconnect(
+        |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
+            con.unbounded_send(act).map_err(|e| e.into())
+        },
+        move || {
+            let con_f = inner_conn_fn(addr);
+            Box::new(Box::pin(con_f)) // TODO - do I need to box and pin? In this order?
+        },
+    );
+    Ok(PubsubConnection {
+        out_tx_c: Arc::new(reconnecting_f.await?),
+    })
+}
 
-// impl PubsubConnection {
-//     /// Subscribes to a particular PUBSUB topic.
-//     ///
-//     /// Returns a future that resolves to a `Stream` that contains all the messages published on
-//     /// that particular topic.
-//     ///
-//     /// The resolved stream will end with `redis_async::error::Error::EndOfStream` if the
-//     /// underlying connection is lost for unexpected reasons. In this situation, clients should
-//     /// `subscribe` to re-subscribe; the underlying connect will automatically reconnect. However,
-//     /// clients should be aware that resubscriptions will only succeed if the underlying connection
-//     /// has re-established, so multiple calls to `subscribe` may be required.
-//     pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
-//         let (tx, rx) = mpsc::unbounded();
-//         let (signal_t, signal_r) = oneshot::channel();
-//         let do_work_f =
-//             self.out_tx_c
-//                 .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t));
+impl PubsubConnection {
+    /// Subscribes to a particular PUBSUB topic.
+    ///
+    /// Returns a future that resolves to a `Stream` that contains all the messages published on
+    /// that particular topic.
+    ///
+    /// The resolved stream will end with `redis_async::error::Error::EndOfStream` if the
+    /// underlying connection is lost for unexpected reasons. In this situation, clients should
+    /// `subscribe` to re-subscribe; the underlying connect will automatically reconnect. However,
+    /// clients should be aware that resubscriptions will only succeed if the underlying connection
+    /// has re-established, so multiple calls to `subscribe` may be required.
+    pub async fn subscribe(&self, topic: &str) -> Result<PubsubStream, error::Error> {
+        let (tx, rx) = mpsc::unbounded();
+        let (signal_t, signal_r) = oneshot::channel();
+        self.out_tx_c
+            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))?;
 
-//         let stream = PubsubStream {
-//             topic: topic.to_owned(),
-//             underlying: rx,
-//             con: self.clone(),
-//         };
-//         do_work_f.and_then(|()| {
-//             signal_r
-//                 .map(|_| stream)
-//                 .map_err(|_| error::internal("Subscription failed, try again later..."))
-//         })
-//     }
+        match signal_r.await {
+            Ok(_) => Ok(PubsubStream {
+                topic: topic.to_owned(),
+                underlying: rx,
+                con: self.clone(),
+            }),
+            Err(_) => Err(error::internal("Subscription failed, try again later...")),
+        }
+    }
 
-//     /// Tells the client to unsubscribe from a particular topic. This will return immediately, the
-//     /// actual unsubscription will be confirmed when the stream returned from `subscribe` ends.
-//     pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
-//         // Ignoring any results, as any errors communicating with Redis would de-facto unsubscribe
-//         // anyway, and would be reported/logged elsewhere
-//         let _ = self
-//             .out_tx_c
-//             .do_work(PubsubEvent::Unsubscribe(topic.into()));
-//     }
-// }
+    /// Tells the client to unsubscribe from a particular topic. This will return immediately, the
+    /// actual unsubscription will be confirmed when the stream returned from `subscribe` ends.
+    pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
+        // Ignoring any results, as any errors communicating with Redis would de-facto unsubscribe
+        // anyway, and would be reported/logged elsewhere
+        let _ = self
+            .out_tx_c
+            .do_work(PubsubEvent::Unsubscribe(topic.into()));
+    }
+}
 
-// pub struct PubsubStream {
-//     topic: String,
-//     underlying: PubsubStreamInner,
-//     con: PubsubConnection,
-// }
+pub struct PubsubStream {
+    topic: String,
+    underlying: PubsubStreamInner,
+    con: PubsubConnection,
+}
 
-// impl Stream for PubsubStream {
-//     type Item = resp::RespValue;
-//     type Error = error::Error;
+impl Stream for PubsubStream {
+    type Item = Result<resp::RespValue, error::Error>;
 
-//     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-//         match self.underlying.poll() {
-//             Ok(Async::Ready(Some(Ok(v)))) => Ok(Async::Ready(Some(v))),
-//             Ok(Async::Ready(Some(Err(e)))) => Err(e),
-//             Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-//             Ok(Async::NotReady) => Ok(Async::NotReady),
-//             Err(()) => Err(error::internal(
-//                 "Unexpected error from underlying PubsubStream",
-//             )),
-//         }
-//     }
-// }
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        self.get_mut().underlying.poll_next_unpin(cx)
+    }
+}
 
-// impl Drop for PubsubStream {
-//     fn drop(&mut self) {
-//         let topic: &str = self.topic.as_ref();
-//         self.con.unsubscribe(topic);
-//     }
-// }
+impl Drop for PubsubStream {
+    fn drop(&mut self) {
+        let topic: &str = self.topic.as_ref();
+        self.con.unsubscribe(topic);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::io;
+
+    use futures::{stream, try_join, FutureExt, Sink, StreamExt, TryStreamExt};
+
+    use tokio;
+
+    use crate::{client, error, resp};
+
+    #[tokio::test]
+    async fn pubsub_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = client::paired_connect(&addr);
+        let pubsub_c = super::pubsub_connect(&addr);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let topic_messages = pubsub
+            .subscribe("test-topic")
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array!["PUBLISH", "test-topic", "test-message"]);
+        paired.send_and_forget(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]);
+        let _: resp::RespValue = paired
+            .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
+            .await
+            .expect("Cannot send to topic");
+
+        let result: Vec<_> = topic_messages
+            .take(2)
+            .try_collect()
+            .await
+            .expect("Cannot collect two values");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "test-message".into());
+        assert_eq!(result[1], "test-message2".into());
+    }
+}
