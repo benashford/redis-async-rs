@@ -53,8 +53,6 @@
 //! returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published
 //! to that topic.
 
-#![feature(async_closure)]
-
 #[macro_use]
 pub mod resp;
 

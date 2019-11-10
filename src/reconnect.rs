@@ -11,14 +11,9 @@
 use std::{
     fmt,
     future::Future,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Mutex, RwLock},
     time::Duration,
 };
-
-// use futures::{
-//     future::{self, Either},
-//     Future,
-// };
 
 use tokio::time::Timeout;
 

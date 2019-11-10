@@ -10,7 +10,7 @@
 
 use std::env;
 
-use futures::{future, Future, StreamExt};
+use futures::StreamExt;
 
 use redis_async::{client, resp::FromResp};
 

@@ -19,8 +19,6 @@ use std::{
 
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
-    future::{FutureExt, TryFutureExt},
-    pin_mut,
     sink::Sink,
     stream::{Fuse, Stream, StreamExt},
 };
@@ -243,7 +241,7 @@ impl Future for PubsubConnectionInner {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this_self = self.get_mut();
-        let flush_req = this_self.handle_new_subs(cx)?;
+        this_self.handle_new_subs(cx)?;
         this_self.do_flush(cx)?;
         let cont = this_self.handle_messages(cx)?;
         if cont {
@@ -357,13 +355,11 @@ impl Drop for PubsubStream {
 
 #[cfg(test)]
 mod test {
-    use std::io;
-
-    use futures::{stream, try_join, FutureExt, Sink, StreamExt, TryStreamExt};
+    use futures::{try_join, StreamExt, TryStreamExt};
 
     use tokio;
 
-    use crate::{client, error, resp};
+    use crate::{client, resp};
 
     #[tokio::test]
     async fn pubsub_test() {
