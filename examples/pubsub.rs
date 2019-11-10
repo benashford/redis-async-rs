@@ -10,35 +10,39 @@
 
 use std::env;
 
-// use futures::{future, Future, Stream};
+use futures::{future, Future, StreamExt};
 
-// use redis_async::client;
-// use redis_async::resp::FromResp;
+use redis_async::{client, resp::FromResp};
 
-fn main() {
-    //     env_logger::init();
-    //     let topic = env::args()
-    //         .nth(1)
-    //         .unwrap_or_else(|| "test-topic".to_string());
-    //     let addr = env::args()
-    //         .nth(2)
-    //         .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-    //         .parse()
-    //         .unwrap();
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    let topic = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "test-topic".to_string());
+    let addr = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
+        .parse()
+        .unwrap();
 
-    //     let msgs =
-    //         client::pubsub_connect(&addr).and_then(move |connection| connection.subscribe(&topic));
-    //     let the_loop = msgs
-    //         .map_err(|e| eprintln!("ERROR, cannot receive messages. Error message: {:?}", e))
-    //         .and_then(|msgs| {
-    //             msgs.for_each(|message| {
-    //                 println!("{}", String::from_resp(message).unwrap());
-    //                 future::ok(())
-    //             })
-    //             .map_err(|e| eprintln!("ERROR, stopping. Error message: {:?}", e))
-    //         });
+    let pubsub_con = client::pubsub_connect(&addr)
+        .await
+        .expect("Cannot connect to Redis");
+    let mut msgs = pubsub_con
+        .subscribe(&topic)
+        .await
+        .expect("Cannot subscribe to topic");
 
-    //     tokio::run(the_loop);
+    while let Some(message) = msgs.next().await {
+        match message {
+            Ok(message) => println!("{}", String::from_resp(message).unwrap()),
+            Err(e) => {
+                eprintln!("ERROR: {}", e);
+                break;
+            }
+        }
+    }
 
-    //     println!("The end");
+    println!("The end");
 }
