@@ -74,7 +74,7 @@ mod test {
         ops.push(resp_array!["FLUSH"]);
         ops.extend((0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]));
         ops.push(resp_array!["SMEMBERS", "test_set"]);
-        let mut ops_stream = stream::iter(ops).map(|o| Ok(o));
+        let mut ops_stream = stream::iter(ops).map(Ok);
         connection
             .send_all(&mut ops_stream)
             .await
