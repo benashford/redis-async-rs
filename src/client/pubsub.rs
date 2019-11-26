@@ -286,7 +286,7 @@ pub async fn pubsub_connect(addr: &SocketAddr) -> Result<PubsubConnection, error
         },
         move || {
             let con_f = inner_conn_fn(addr);
-            Box::new(Box::pin(con_f)) // TODO - do I need to box and pin? In this order?
+            Box::new(Box::pin(con_f))
         },
     );
     Ok(PubsubConnection {

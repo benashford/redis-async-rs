@@ -199,7 +199,7 @@ async fn inner_conn_fn(
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let connection = connect(&addr).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
-    let paired_connection_inner = Box::pin(PairedConnectionInner::new(connection, out_rx));
+    let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
     Ok(out_tx)
 }
