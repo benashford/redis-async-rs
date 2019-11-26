@@ -22,7 +22,7 @@ In summary: a `PairedConnection` or `PubsubConnection` will remain valid and wil
 
 ### Minimum rustc version
 
-Version 0.5 requires rustc 1.31.0 or higher.
+Version 0.6 requires rustc 1.39.0 or higher.
 
 ## Other clients
 
