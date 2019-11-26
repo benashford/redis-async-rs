@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,37 +8,31 @@
  * except according to those terms.
  */
 
-extern crate futures;
-#[macro_use]
-extern crate redis_async;
-extern crate tokio;
-
 use std::env;
 
-use futures::{future, Future, Sink, Stream};
+use futures::{sink::SinkExt, stream::StreamExt};
 
-use redis_async::client;
+use redis_async::{client, resp_array};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:6379".to_string())
         .parse()
-        .unwrap();
+        .expect("Cannot parse Redis connection string");
 
-    let monitor = client::connect(&addr)
-        .map_err(|e| e.into())
-        .and_then(|connection| {
-            connection
-                .send(resp_array!["MONITOR"])
-                .map_err(|e| e.into())
-        })
-        .and_then(|connection| {
-            connection.skip(1).for_each(|incoming| {
-                println!("{:?}", incoming);
-                future::ok(())
-            })
-        });
+    let mut connection = client::connect(&addr)
+        .await
+        .expect("Cannot connect to Redis");
+    connection
+        .send(resp_array!["MONITOR"])
+        .await
+        .expect("Cannot send MONITOR command");
 
-    tokio::run(monitor.map_err(|e| println!("ERROR: {:?}", e)));
+    let mut skip_one = connection.skip(1);
+
+    while let Some(incoming) = skip_one.next().await {
+        println!("{:?}", incoming.expect("Cannot read incoming value"));
+    }
 }

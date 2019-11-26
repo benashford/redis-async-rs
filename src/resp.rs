@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,14 +10,15 @@
 
 //! An implementation of the RESP protocol
 
-use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash};
-use std::io;
-use std::str;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, Hash},
+    io, str,
+};
 
 use bytes::{BufMut, BytesMut};
 
-use tokio_io::codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 use super::error::{self, Error};
 
@@ -658,7 +659,7 @@ mod tests {
 
     use bytes::BytesMut;
 
-    use tokio_io::codec::{Decoder, Encoder};
+    use tokio_util::codec::{Decoder, Encoder};
 
     use super::{Error, FromResp, RespCodec, RespValue};
 

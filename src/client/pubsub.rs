@@ -8,17 +8,20 @@
  * except according to those terms.
  */
 
-use std::collections::{btree_map::Entry, BTreeMap};
-use std::net::SocketAddr;
-
-use futures::{
-    future,
-    stream::Fuse,
-    sync::{mpsc, oneshot},
-    Async, AsyncSink, Future, Poll, Sink, Stream,
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
 
-use tokio_executor::{DefaultExecutor, Executor};
+use futures_channel::{mpsc, oneshot};
+use futures_util::{
+    sink::Sink,
+    stream::{Fuse, Stream, StreamExt},
+};
 
 use super::connect::{connect, RespConnection};
 
@@ -52,7 +55,7 @@ struct PubsubConnectionInner {
     subscriptions: BTreeMap<String, PubsubSink>,
     /// Subscriptions that have not yet been confirmed
     pending_subs: BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
-    /// Any incomplete messages to-be-sent
+    /// Any incomplete messages to be sent...
     send_pending: Option<resp::RespValue>,
 }
 
@@ -67,39 +70,39 @@ impl PubsubConnectionInner {
         }
     }
 
-    /// Returns true = OK, more can be sent, or false = sink is full, needs flushing
-    fn do_send(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
-        match self.connection.start_send(msg)? {
-            AsyncSink::Ready => Ok(true),
-            AsyncSink::NotReady(msg) => {
+    /// Returns `true` if data sent, or `false` if stream not ready...
+    fn do_send(&mut self, cx: &mut Context, msg: resp::RespValue) -> Result<bool, error::Error> {
+        match Pin::new(&mut self.connection).poll_ready(cx) {
+            Poll::Ready(_) => {
+                Pin::new(&mut self.connection).start_send(msg)?;
+                Ok(true)
+            }
+            Poll::Pending => {
                 self.send_pending = Some(msg);
                 Ok(false)
             }
         }
     }
 
-    fn do_flush(&mut self) -> Result<(), error::Error> {
-        self.connection
-            .poll_complete()
-            .map(|_| ())
-            .map_err(|e| e.into())
+    fn do_flush(&mut self, cx: &mut Context) -> Result<(), error::Error> {
+        match Pin::new(&mut self.connection).poll_flush(cx) {
+            Poll::Ready(r) => r.map_err(|e| e.into()),
+            Poll::Pending => Ok(()),
+        }
     }
 
     // Returns true = flushing required.  false = no flushing required
-    fn handle_new_subs(&mut self) -> Result<bool, error::Error> {
-        let mut flushing_req = false;
+    fn handle_new_subs(&mut self, cx: &mut Context) -> Result<(), error::Error> {
         if let Some(msg) = self.send_pending.take() {
-            flushing_req = true;
-            if !self.do_send(msg)? {
-                return Ok(flushing_req);
+            if !self.do_send(cx, msg)? {
+                return Ok(());
             }
         }
         loop {
-            match self.out_rx.poll() {
-                Ok(Async::Ready(None)) => {
-                    return Ok(flushing_req);
-                }
-                Ok(Async::Ready(Some(pubsub_event))) => {
+            match self.out_rx.poll_next_unpin(cx) {
+                Poll::Pending => return Ok(()),
+                Poll::Ready(None) => return Ok(()),
+                Poll::Ready(Some(pubsub_event)) => {
                     let message = match pubsub_event {
                         PubsubEvent::Subscribe(topic, sender, signal) => {
                             self.pending_subs.insert(topic.clone(), (sender, signal));
@@ -107,18 +110,9 @@ impl PubsubConnectionInner {
                         }
                         PubsubEvent::Unsubscribe(topic) => resp_array!["UNSUBSCRIBE", topic],
                     };
-                    flushing_req = true;
-                    if !self.do_send(message)? {
-                        return Ok(flushing_req);
+                    if !self.do_send(cx, message)? {
+                        return Ok(());
                     }
-                }
-                Ok(Async::NotReady) => {
-                    return Ok(flushing_req);
-                }
-                Err(()) => {
-                    return Err(error::internal(
-                        "Unexpected error polling outgoing unbuffered channel",
-                    ));
                 }
             }
         }
@@ -203,10 +197,11 @@ impl PubsubConnectionInner {
     }
 
     /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
-    fn handle_messages(&mut self) -> Result<bool, error::Error> {
+    fn handle_messages(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
         loop {
-            match self.connection.poll() {
-                Ok(Async::Ready(None)) => {
+            match self.connection.poll_next_unpin(cx) {
+                Poll::Pending => return Ok(true),
+                Poll::Ready(None) => {
                     if self.subscriptions.is_empty() {
                         return Ok(false);
                     } else {
@@ -220,14 +215,13 @@ impl PubsubConnectionInner {
                         return Err(error::Error::Connection(ConnectionReason::NotConnected));
                     }
                 }
-                Ok(Async::Ready(Some(message))) => {
+                Poll::Ready(Some(Ok(message))) => {
                     let message_result = self.handle_message(message)?;
                     if !message_result {
                         return Ok(false);
                     }
                 }
-                Ok(Async::NotReady) => return Ok(true),
-                Err(e) => {
+                Poll::Ready(Some(Err(e))) => {
                     for sub in self.subscriptions.values() {
                         sub.unbounded_send(Err(error::unexpected(format!(
                             "Connection is in the process of failing due to: {}",
@@ -243,19 +237,17 @@ impl PubsubConnectionInner {
 }
 
 impl Future for PubsubConnectionInner {
-    type Item = ();
-    type Error = error::Error;
+    type Output = Result<(), error::Error>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let flush_req = self.handle_new_subs()?;
-        if flush_req {
-            self.do_flush()?;
-        }
-        let cont = self.handle_messages()?;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let this_self = self.get_mut();
+        this_self.handle_new_subs(cx)?;
+        this_self.do_flush(cx)?;
+        let cont = this_self.handle_messages(cx)?;
         if cont {
-            Ok(Async::NotReady)
+            Poll::Pending
         } else {
-            Ok(Async::Ready(()))
+            Poll::Ready(Ok(()))
         }
     }
 }
@@ -263,7 +255,21 @@ impl Future for PubsubConnectionInner {
 /// A shareable reference to subscribe to PUBSUB topics
 #[derive(Debug, Clone)]
 pub struct PubsubConnection {
-    out_tx_c: Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>,
+    out_tx_c: Arc<Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>>,
+}
+
+async fn inner_conn_fn(
+    addr: SocketAddr,
+) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
+    let connection = connect(&addr).await?;
+    let (out_tx, out_rx) = mpsc::unbounded();
+    tokio::spawn(async {
+        match PubsubConnectionInner::new(connection, out_rx).await {
+            Ok(_) => (),
+            Err(e) => log::error!("Pub/Sub error: {:?}", e),
+        }
+    });
+    Ok(out_tx)
 }
 
 /// Used for Redis's PUBSUB functionality.
@@ -272,36 +278,20 @@ pub struct PubsubConnection {
 /// connection is established; after the intial establishment, if the connection drops for any
 /// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
 /// any subscriptions will need to be re-subscribed.
-pub fn pubsub_connect(
-    addr: &SocketAddr,
-) -> impl Future<Item = PubsubConnection, Error = error::Error> + Send {
+pub async fn pubsub_connect(addr: &SocketAddr) -> Result<PubsubConnection, error::Error> {
     let addr = *addr;
-    future::lazy(move || {
-        reconnect(
-            |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
-                Box::new(future::result(con.unbounded_send(act)).map_err(|e| e.into()))
-            },
-            move || {
-                let con_f = connect(&addr).map_err(|e| e.into()).and_then(|connection| {
-                    let (out_tx, out_rx) = mpsc::unbounded();
-                    let pubsub_connection_inner = Box::new(
-                        PubsubConnectionInner::new(connection, out_rx)
-                            .map_err(|e| log::error!("Pub/Sub error: {:?}", e)),
-                    );
-                    let mut default_executor = DefaultExecutor::current();
-                    match default_executor.spawn(pubsub_connection_inner) {
-                        Ok(_) => Ok(out_tx),
-                        Err(e) => Err(error::Error::Internal(format!(
-                            "Cannot spawn a pubsub connection: {:?}",
-                            e
-                        ))),
-                    }
-                });
-                Box::new(con_f)
-            },
-        )
+    let reconnecting_f = reconnect(
+        |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
+            con.unbounded_send(act).map_err(|e| e.into())
+        },
+        move || {
+            let con_f = inner_conn_fn(addr);
+            Box::new(Box::pin(con_f)) // TODO - do I need to box and pin? In this order?
+        },
+    );
+    Ok(PubsubConnection {
+        out_tx_c: Arc::new(reconnecting_f.await?),
     })
-    .map(|out_tx_c| PubsubConnection { out_tx_c })
 }
 
 impl PubsubConnection {
@@ -315,23 +305,20 @@ impl PubsubConnection {
     /// `subscribe` to re-subscribe; the underlying connect will automatically reconnect. However,
     /// clients should be aware that resubscriptions will only succeed if the underlying connection
     /// has re-established, so multiple calls to `subscribe` may be required.
-    pub fn subscribe(&self, topic: &str) -> impl Future<Item = PubsubStream, Error = error::Error> {
+    pub async fn subscribe(&self, topic: &str) -> Result<PubsubStream, error::Error> {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
-        let do_work_f =
-            self.out_tx_c
-                .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t));
+        self.out_tx_c
+            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))?;
 
-        let stream = PubsubStream {
-            topic: topic.to_owned(),
-            underlying: rx,
-            con: self.clone(),
-        };
-        do_work_f.and_then(|()| {
-            signal_r
-                .map(|_| stream)
-                .map_err(|_| error::internal("Subscription failed, try again later..."))
-        })
+        match signal_r.await {
+            Ok(_) => Ok(PubsubStream {
+                topic: topic.to_owned(),
+                underlying: rx,
+                con: self.clone(),
+            }),
+            Err(_) => Err(error::internal("Subscription failed, try again later...")),
+        }
     }
 
     /// Tells the client to unsubscribe from a particular topic. This will return immediately, the
@@ -352,19 +339,10 @@ pub struct PubsubStream {
 }
 
 impl Stream for PubsubStream {
-    type Item = resp::RespValue;
-    type Error = error::Error;
+    type Item = Result<resp::RespValue, error::Error>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.underlying.poll() {
-            Ok(Async::Ready(Some(Ok(v)))) => Ok(Async::Ready(Some(v))),
-            Ok(Async::Ready(Some(Err(e)))) => Err(e),
-            Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(()) => Err(error::internal(
-                "Unexpected error from underlying PubsubStream",
-            )),
-        }
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        self.get_mut().underlying.poll_next_unpin(cx)
     }
 }
 
@@ -372,5 +350,44 @@ impl Drop for PubsubStream {
     fn drop(&mut self) {
         let topic: &str = self.topic.as_ref();
         self.con.unsubscribe(topic);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use futures::{try_join, StreamExt, TryStreamExt};
+
+    use tokio;
+
+    use crate::{client, resp};
+
+    #[tokio::test]
+    async fn pubsub_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = client::paired_connect(&addr);
+        let pubsub_c = super::pubsub_connect(&addr);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let topic_messages = pubsub
+            .subscribe("test-topic")
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array!["PUBLISH", "test-topic", "test-message"]);
+        paired.send_and_forget(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]);
+        let _: resp::RespValue = paired
+            .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
+            .await
+            .expect("Cannot send to topic");
+
+        let result: Vec<_> = topic_messages
+            .take(2)
+            .try_collect()
+            .await
+            .expect("Cannot collect two values");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "test-message".into());
+        assert_eq!(result[1], "test-message2".into());
     }
 }

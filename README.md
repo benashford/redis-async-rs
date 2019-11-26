@@ -109,16 +109,7 @@ See an [`examples/pubsub.rs`](examples/pubsub.rs). This will listen on a topic (
 
 ## Performance
 
-This project is still in its early stages, as such there is plenty of scope for change that could improve (or worsen) performance characteristics. There are however a number of benchmarks in [`benches/benchmarks.rs`](benches/benchmarks.rs).
-
-### Results
-
-In most cases the difference is small.
-
-| Benchmark        | redis-async-rs  |
-| ---------------- | --------------- |
-| simple_getsetdel | 64,224 ns/iter  |
-| complex          | 780,619 ns/iter |
+I've removed the benchmarks from this project, as the examples were all out-of-date. I intend, at some point, to create a separate benchmarking repository which can more fairly do side-by-side performance tests of this and other Redis clients.
 
 ## Next steps
 

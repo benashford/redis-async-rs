@@ -8,17 +8,18 @@
  * except according to those terms.
  */
 
-use std::collections::VecDeque;
-use std::net::SocketAddr;
-
-use futures::{
-    future,
-    future::Either,
-    sync::{mpsc, oneshot},
-    Async, AsyncSink, Future, Poll, Sink, Stream,
+use std::{
+    collections::VecDeque,
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
 
-use tokio_executor::{DefaultExecutor, Executor};
+use futures_channel::{mpsc, oneshot};
+use futures_sink::Sink;
+use futures_util::{future, stream::StreamExt};
 
 use super::connect::{connect, RespConnection};
 
@@ -53,8 +54,8 @@ enum ReceiveStatus {
 type Responder = oneshot::Sender<resp::RespValue>;
 type SendPayload = (resp::RespValue, Responder);
 
-/// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
-/// results onto a `RespConnection` that is otherwise unpaired
+// /// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
+// /// results onto a `RespConnection` that is otherwise unpaired
 struct PairedConnectionInner {
     /// The underlying connection that talks the RESP protocol
     connection: RespConnection,
@@ -80,20 +81,26 @@ impl PairedConnectionInner {
         }
     }
 
-    fn impl_start_send(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
-        match self.connection.start_send(msg)? {
-            AsyncSink::Ready => {
-                self.send_status = SendStatus::Ok;
-                Ok(true)
-            }
-            AsyncSink::NotReady(msg) => {
+    fn impl_start_send(
+        &mut self,
+        cx: &mut Context,
+        msg: resp::RespValue,
+    ) -> Result<bool, error::Error> {
+        match Pin::new(&mut self.connection).poll_ready(cx) {
+            Poll::Ready(Ok(())) => (),
+            Poll::Ready(Err(e)) => return Err(e.into()),
+            Poll::Pending => {
                 self.send_status = SendStatus::Full(msg);
-                Ok(false)
+                return Ok(false);
             }
         }
+
+        self.send_status = SendStatus::Ok;
+        Pin::new(&mut self.connection).start_send(msg)?;
+        Ok(true)
     }
 
-    fn poll_start_send(&mut self) -> Result<bool, error::Error> {
+    fn poll_start_send(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
         let mut status = SendStatus::Ok;
         ::std::mem::swap(&mut status, &mut self.send_status);
 
@@ -103,68 +110,79 @@ impl PairedConnectionInner {
                 return Ok(false);
             }
             SendStatus::Full(msg) => msg,
-            SendStatus::Ok => match self.out_rx.poll() {
-                Ok(Async::Ready(Some((msg, tx)))) => {
+            SendStatus::Ok => match self.out_rx.poll_next_unpin(cx) {
+                Poll::Ready(Some((msg, tx))) => {
                     self.waiting.push_back(tx);
                     msg
                 }
-                Ok(Async::Ready(None)) => {
+                Poll::Ready(None) => {
                     self.send_status = SendStatus::End;
                     return Ok(false);
                 }
-                Ok(Async::NotReady) => return Ok(false),
-                Err(()) => return Err(error::internal("Error polling for messages to send")),
+                Poll::Pending => return Ok(false),
             },
         };
 
-        self.impl_start_send(message)
+        self.impl_start_send(cx, message)
     }
 
-    fn poll_complete(&mut self) -> Result<(), error::Error> {
-        self.connection.poll_complete()?;
+    fn poll_complete(&mut self, cx: &mut Context) -> Result<(), error::Error> {
+        let _ = Pin::new(&mut self.connection).poll_flush(cx)?;
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<ReceiveStatus, error::Error> {
+    fn receive(&mut self, cx: &mut Context) -> Result<ReceiveStatus, error::Error> {
         if let SendStatus::End = self.send_status {
             if self.waiting.is_empty() {
                 return Ok(ReceiveStatus::ReadyFinished);
             }
         }
-        match self.connection.poll()? {
-            Async::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
-            Async::Ready(Some(msg)) => {
+        match self.connection.poll_next_unpin(cx) {
+            Poll::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
+            Poll::Ready(Some(msg)) => {
                 let tx = match self.waiting.pop_front() {
                     Some(tx) => tx,
                     None => panic!("Received unexpected message: {:?}", msg),
                 };
-                let _ = tx.send(msg);
+                let _ = tx.send(msg?);
                 Ok(ReceiveStatus::ReadyMore)
             }
-            Async::NotReady => Ok(ReceiveStatus::NotReady),
+            Poll::Pending => Ok(ReceiveStatus::NotReady),
         }
+    }
+
+    fn handle_error(&self, e: &error::Error) {
+        // TODO - this could be handled better, returning errors to waiting things, possibly.
+        log::error!("Internal error in PairedConnectionInner: {}", e);
     }
 }
 
 impl Future for PairedConnectionInner {
-    type Item = ();
-    type Error = error::Error;
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    #[allow(clippy::unit_arg)]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let mut_self = self.get_mut();
         // If there's something to send, send it...
         let mut sending = true;
         while sending {
-            sending = self.poll_start_send()?;
+            sending = match mut_self.poll_start_send(cx) {
+                Ok(sending) => sending,
+                Err(ref e) => return Poll::Ready(mut_self.handle_error(e)),
+            };
         }
 
-        self.poll_complete()?;
+        if let Err(ref e) = mut_self.poll_complete(cx) {
+            return Poll::Ready(mut_self.handle_error(e));
+        };
 
         // If there's something to receive, receive it...
         loop {
-            match self.receive()? {
-                ReceiveStatus::NotReady => return Ok(Async::NotReady),
-                ReceiveStatus::ReadyMore => (),
-                ReceiveStatus::ReadyFinished => return Ok(Async::Ready(())),
+            match mut_self.receive(cx) {
+                Ok(ReceiveStatus::NotReady) => return Poll::Pending,
+                Ok(ReceiveStatus::ReadyMore) => (),
+                Ok(ReceiveStatus::ReadyFinished) => return Poll::Ready(()),
+                Err(ref e) => return Poll::Ready(mut_self.handle_error(e)),
             }
         }
     }
@@ -173,7 +191,17 @@ impl Future for PairedConnectionInner {
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Debug, Clone)]
 pub struct PairedConnection {
-    out_tx_c: Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>,
+    out_tx_c: Arc<Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>>,
+}
+
+async fn inner_conn_fn(
+    addr: SocketAddr,
+) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
+    let connection = connect(&addr).await?;
+    let (out_tx, out_rx) = mpsc::unbounded();
+    let paired_connection_inner = Box::pin(PairedConnectionInner::new(connection, out_rx));
+    tokio::spawn(paired_connection_inner);
+    Ok(out_tx)
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -187,42 +215,20 @@ pub struct PairedConnection {
 /// the client's responsibility to retry commands as applicable. Also, at least one command needs
 /// to be tried against the connection to trigger the re-connection attempt; this means at least
 /// one command will definitely fail in a disconnect/reconnect scenario.
-pub fn paired_connect(
-    addr: &SocketAddr,
-) -> impl Future<Item = PairedConnection, Error = error::Error> + Send {
-    // NOTE - the lazy here isn't strictly necessary.
-    //
-    // It ensures that a Tokio executor runs the future.  This function would work correctly
-    // without it, if we could be sure this function was only called by other futures that were
-    // executed within the Tokio executor, but we cannot guarantee that.
+pub async fn paired_connect(addr: &SocketAddr) -> Result<PairedConnection, error::Error> {
     let addr = *addr;
-    future::lazy(move || {
-        reconnect(
-            |con: &mpsc::UnboundedSender<SendPayload>, act| {
-                Box::new(future::result(con.unbounded_send(act)).map_err(|e| e.into()))
-            },
-            move || {
-                let con_f = connect(&addr).map_err(|e| e.into()).and_then(|connection| {
-                    let (out_tx, out_rx) = mpsc::unbounded();
-                    let paired_connection_inner = Box::new(
-                        PairedConnectionInner::new(connection, out_rx)
-                            .map_err(|e| log::error!("PairedConnection error: {}", e)),
-                    );
-                    let mut executor = DefaultExecutor::current();
-
-                    match executor.spawn(paired_connection_inner) {
-                        Ok(_) => Ok(out_tx),
-                        Err(e) => Err(error::Error::Internal(format!(
-                            "Cannot spawn paired connection: {:?}",
-                            e
-                        ))),
-                    }
-                });
-                Box::new(con_f)
-            },
-        )
+    let reconnecting_con = reconnect(
+        |con: &mpsc::UnboundedSender<SendPayload>, act| {
+            con.unbounded_send(act).map_err(|e| e.into())
+        },
+        move || {
+            let con_f = inner_conn_fn(addr);
+            Box::new(Box::pin(con_f))
+        },
+    );
+    Ok(PairedConnection {
+        out_tx_c: Arc::new(reconnecting_con.await?),
     })
-    .map(|out_tx_c| PairedConnection { out_tx_c })
 }
 
 impl PairedConnection {
@@ -238,33 +244,100 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Item = T, Error = error::Error>
+    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Output = Result<T, error::Error>>
     where
         T: resp::FromResp,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
             _ => {
-                return Either::B(future::err(error::internal(
+                return future::Either::Right(future::ready(Err(error::internal(
                     "Command must be a RespValue::Array",
-                )));
+                ))));
             }
         }
 
         let (tx, rx) = oneshot::channel();
-        let send_f = self.out_tx_c.do_work((msg, tx));
-
-        Either::A(send_f.and_then(|_| {
-            rx.then(|v| match v {
-                Ok(v) => future::result(T::from_resp(v)),
-                Err(_) => future::err(error::internal(
-                    "Connection closed before response received",
-                )),
-            })
-        }))
+        match self.out_tx_c.do_work((msg, tx)) {
+            Ok(()) => future::Either::Left(async move {
+                match rx.await {
+                    Ok(v) => Ok(T::from_resp(v)?),
+                    Err(_) => Err(error::internal(
+                        "Connection closed before response received",
+                    )),
+                }
+            }),
+            Err(e) => future::Either::Right(future::ready(Err(e))),
+        }
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
-        let _ = self.send::<resp::RespValue>(msg);
+        let send_f = self.send::<resp::RespValue>(msg);
+        let forget_f = async {
+            if let Err(e) = send_f.await {
+                log::error!("Error in send_and_forget: {}", e);
+            }
+        };
+        tokio::spawn(forget_f);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[tokio::test]
+    async fn can_paired_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connection = super::paired_connect(&addr)
+            .await
+            .expect("Cannot establish connection");
+
+        let res_f = connection.send(resp_array!["PING", "TEST"]);
+        connection.send_and_forget(resp_array!["SET", "X", "123"]);
+        let wait_f = connection.send(resp_array!["GET", "X"]);
+
+        let result_1: String = res_f.await.expect("Cannot read result of first thing");
+        let result_2: String = wait_f.await.expect("Cannot read result of second thing");
+
+        assert_eq!(result_1, "TEST");
+        assert_eq!(result_2, "123");
+    }
+
+    #[tokio::test]
+    async fn complex_paired_connect() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connection = super::paired_connect(&addr)
+            .await
+            .expect("Cannot establish connection");
+
+        let value: String = connection
+            .send(resp_array!["INCR", "CTR"])
+            .await
+            .expect("Cannot increment counter");
+        let result: String = connection
+            .send(resp_array!["SET", "LASTCTR", value])
+            .await
+            .expect("Cannot set value");
+
+        assert_eq!(result, "OK");
+    }
+
+    #[tokio::test]
+    async fn sending_a_lot_of_data_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+
+        let connection = super::paired_connect(&addr)
+            .await
+            .expect("Cannot connect to Redis");
+        let mut futures = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            let key = format!("X_{}", i);
+            connection.send_and_forget(resp_array!["SET", &key, i.to_string()]);
+            futures.push(connection.send(resp_array!["GET", key]));
+        }
+        let last_future = futures.remove(999);
+        let result: String = last_future.await.expect("Cannot wait for result");
+        assert_eq!(result, "999");
     }
 }

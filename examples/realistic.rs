@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2018 Ben Ashford
+ * Copyright 2017-2019 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,21 +8,17 @@
  * except according to those terms.
  */
 
-extern crate futures;
-#[macro_use]
-extern crate redis_async;
-extern crate tokio;
-
 use std::env;
-use std::sync::Arc;
 
-use futures::sync::oneshot;
-use futures::{future, Future};
+use futures_util::future;
 
-use redis_async::client;
+// use futures::{future, Future};
 
-// An artificial "realistic" non-trivial example to demonstrate usage
-fn main() {
+use redis_async::{client, resp_array};
+
+/// An artificial "realistic" non-trivial example to demonstrate usage
+#[tokio::main]
+async fn main() {
     // Create some completely arbitrary "test data"
     let test_data_size = 10;
     let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
@@ -33,41 +29,26 @@ fn main() {
         .parse()
         .unwrap();
 
-    let test_f = client::paired_connect(&addr);
-    let (tx, rx) = oneshot::channel();
+    let connection = client::paired_connect(&addr)
+        .await
+        .expect("Cannot open connection");
 
-    let send_data = test_f.and_then(|connection| {
-        let connection = Arc::new(connection);
-        let futures = test_data.into_iter().map(move |data| {
-            let connection_inner = connection.clone();
-            connection
-                .send(resp_array!["INCR", "realistic_test_ctr"])
-                .and_then(move |ctr: String| {
-                    let key = format!("rt_{}", ctr);
-                    let d_val = data.0.to_string();
-                    connection_inner.send_and_forget(resp_array!["SET", &key, d_val]);
-                    connection_inner.send(resp_array!["SET", data.1, key])
-                })
-        });
-        future::join_all(futures)
-    });
-    let deliver = send_data.then(|result| match result {
-        Ok(result) => match tx.send(result) {
-            Ok(_) => future::ok(()),
-            Err(e) => {
-                println!("Unexpected error: {:?}", e);
-                future::err(())
-            }
-        },
-        Err(e) => {
-            println!("Unexpected error: {:?}", e);
-            future::err(())
+    let futures = test_data.into_iter().map(|data| {
+        let connection_inner = connection.clone();
+        let incr_f = connection.send(resp_array!["INCR", "realistic_test_ctr"]);
+        async move {
+            let ctr: String = incr_f.await.expect("Cannot increment");
+
+            let key = format!("rt_{}", ctr);
+            let d_val = data.0.to_string();
+            connection_inner.send_and_forget(resp_array!["SET", &key, d_val]);
+            connection_inner
+                .send(resp_array!["SET", data.1, key])
+                .await
+                .expect("Cannot set")
         }
     });
-
-    tokio::run(deliver);
-
-    let result: Vec<String> = rx.wait().expect("Waiting for delivery");
+    let result: Vec<String> = future::join_all(futures).await;
     println!("RESULT: {:?}", result);
     assert_eq!(result.len(), test_data_size);
 }
