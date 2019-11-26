@@ -10,17 +10,15 @@ keywords = ["redis", "tokio"]
 edition = "2018"
 
 [dependencies]
-cfg-if = "=0.1.9" # Not used directly, but required because mio required by pre-release Tokio requires this version
-
-bytes = { git = "https://github.com/tokio-rs/bytes.git", branch = "master" }
+bytes = "0.5"
 log = "0.4"
 futures-channel = "0.3"
 futures-sink = "0.3"
 futures-util = "0.3"
-tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master", features = ["rt-core", "net", "time"] }
-tokio-util = { git = "https://github.com/tokio-rs/tokio.git", branch = "master", features = ["codec"] }
+tokio = { version = "0.2", features = ["rt-core", "net", "time"] }
+tokio-util = { version = "0.2", features = ["codec"] }
 
 [dev-dependencies]
 env_logger = "0.7"
 futures = "0.3"
-tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "master", features = ["rt-threaded", "macros"] }
+tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
