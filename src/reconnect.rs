@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::time::Timeout;
+use tokio::time::timeout;
 
 use crate::error::{self, ConnectionReason};
 
@@ -159,7 +159,7 @@ where
             *state = ReconnectState::Connecting;
         }
 
-        let connection = match Timeout::new((self.conn_fn)(), CONNECTION_TIMEOUT).await {
+        let connection = match timeout(CONNECTION_TIMEOUT, (self.conn_fn)()).await {
             Ok(con_r) => con_r,
             Err(_) => {
                 return Err(error::internal(format!(

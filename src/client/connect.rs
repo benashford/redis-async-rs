@@ -10,7 +10,7 @@
 
 use std::{io, net::SocketAddr};
 
-use tokio::net::tcp::TcpStream;
+use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed};
 
 use crate::resp;
