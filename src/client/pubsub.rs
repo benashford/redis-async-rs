@@ -19,9 +19,9 @@ use std::{
 
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
-    sink::Sink,
     stream::{Fuse, Stream, StreamExt},
 };
+use futures_sink::Sink;
 
 use super::connect::{connect, RespConnection};
 
