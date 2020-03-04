@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.6.1"
+version = "0.6.2"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Ben Ashford
+ * Copyright 2018-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -186,12 +186,10 @@ where
         let connection_f = async move {
             let connection = match timeout(CONNECTION_TIMEOUT, (reconnect.0.conn_fn)()).await {
                 Ok(con_r) => con_r,
-                Err(_) => {
-                    return Err(error::internal(format!(
-                        "Connection timed-out after {} seconds",
-                        CONNECTION_TIMEOUT_SECONDS
-                    )))
-                }
+                Err(_) => Err(error::internal(format!(
+                    "Connection timed-out after {} seconds",
+                    CONNECTION_TIMEOUT_SECONDS
+                ))),
             };
 
             let mut state = reconnect.0.state.write().expect("Cannot obtain write lock");
