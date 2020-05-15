@@ -435,8 +435,7 @@ fn write_simple_string(symb: u8, string: &str, buf: &mut BytesMut) {
     write_rn(buf);
 }
 
-impl Encoder for RespCodec {
-    type Item = RespValue;
+impl Encoder<RespValue> for RespCodec {
     type Error = io::Error;
 
     fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
