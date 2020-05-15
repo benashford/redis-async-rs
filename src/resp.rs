@@ -16,7 +16,7 @@ use std::{
     io, str,
 };
 
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -645,7 +645,7 @@ impl Decoder for RespCodec {
         match decode(buf, 0) {
             Ok(None) => Ok(None),
             Ok(Some((pos, item))) => {
-                buf.split_to(pos);
+                buf.advance(pos);
                 Ok(Some(item))
             }
             Err(e) => Err(e),
