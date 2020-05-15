@@ -68,38 +68,33 @@ impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
 }
 
 impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Internal(ref s) => s,
-            Error::IO(ref err) => err.description(),
-            Error::RESP(ref s, _) => s,
-            Error::Remote(ref s) => s,
-            Error::Connection(ConnectionReason::Connected) => "Connection already established",
-            Error::Connection(ConnectionReason::Connecting) => "Connection in progress",
-            Error::Connection(ConnectionReason::ConnectionFailed) => {
-                "The last attempt to establish a connection failed"
-            }
-            Error::Connection(ConnectionReason::NotConnected) => "Connection has been closed",
-            Error::Unexpected(ref err) => err,
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn error::Error> {
-        match *self {
-            Error::Internal(_) => None,
-            Error::IO(ref err) => Some(err),
-            Error::RESP(_, _) => None,
-            Error::Remote(_) => None,
-            Error::Connection(_) => None,
-            Error::Unexpected(_) => None,
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Error::IO(err) => Some(err),
+            _ => None,
         }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use std::error::Error;
-        fmt::Display::fmt(self.description(), f)
+        match self {
+            Error::Internal(s) => write!(f, "{}", s),
+            Error::IO(err) => write!(f, "{}", err),
+            Error::RESP(s, _) => write!(f, "{}", s),
+            Error::Remote(s) => write!(f, "{}", s),
+            Error::Connection(ConnectionReason::Connected) => {
+                write!(f, "Connection already established")
+            }
+            Error::Connection(ConnectionReason::Connecting) => write!(f, "Connection in progress"),
+            Error::Connection(ConnectionReason::ConnectionFailed) => {
+                write!(f, "The last attempt to establish a connection failed")
+            }
+            Error::Connection(ConnectionReason::NotConnected) => {
+                write!(f, "Connection has been closed")
+            }
+            Error::Unexpected(err) => write!(f, "{}", err),
+        }
     }
 }
 
