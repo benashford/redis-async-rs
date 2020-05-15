@@ -355,8 +355,6 @@ impl Drop for PubsubStream {
 mod test {
     use futures::{try_join, StreamExt, TryStreamExt};
 
-    use tokio;
-
     use crate::{client, resp};
 
     #[tokio::test]
