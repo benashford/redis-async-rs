@@ -18,10 +18,8 @@ use std::{
 };
 
 use futures_channel::{mpsc, oneshot};
-use futures_util::{
-    stream::{Fuse, Stream, StreamExt},
-};
 use futures_sink::Sink;
+use futures_util::stream::{Fuse, Stream, StreamExt};
 
 use super::connect::{connect, RespConnection};
 
