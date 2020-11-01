@@ -18,10 +18,8 @@ use std::{
 };
 
 use futures_channel::{mpsc, oneshot};
-use futures_util::{
-    stream::{Fuse, Stream, StreamExt},
-};
 use futures_sink::Sink;
+use futures_util::stream::{Fuse, Stream, StreamExt};
 
 use super::connect::{connect, RespConnection};
 
@@ -356,8 +354,6 @@ impl Drop for PubsubStream {
 #[cfg(test)]
 mod test {
     use futures::{try_join, StreamExt, TryStreamExt};
-
-    use tokio;
 
     use crate::{client, resp};
 
