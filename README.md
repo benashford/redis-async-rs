@@ -26,7 +26,7 @@ Version 0.6 requires rustc 1.39.0 or higher.
 
 ## Other clients
 
-When starting this library there weren't any other Redis clients that used Tokio. However the current situation is more competative:
+When starting this library there weren't any other Redis clients that used Tokio. However the current situation is more competitive:
 
 - Redis-RS - https://github.com/mitsuhiko/redis-rs - the oldest Redis client for Rust now supports asynchronous operations using Tokio.
 - Fred - https://github.com/azuqua/fred.rs - this also supports Redis clusters.
