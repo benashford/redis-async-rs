@@ -3,4 +3,4 @@ target/
 Cargo.lock
 dump.rdb
 .vscode/
-.idea
+.idea/
