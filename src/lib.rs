@@ -52,8 +52,6 @@
 //! [`subscribe`](client/pubsub/struct.PubsubConnection.html#method.subscribe) function that takes a topic as a parameter and
 //! returns a future which, once the subscription is confirmed, resolves to a stream that contains all messages published
 //! to that topic.
-extern crate bytes;
-
 #[macro_use]
 pub mod resp;
 
