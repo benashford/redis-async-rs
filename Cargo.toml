@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.6.3"
+version = "0.7.0"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -10,15 +10,15 @@ keywords = ["redis", "tokio"]
 edition = "2018"
 
 [dependencies]
-bytes = "0.5"
-log = "0.4"
-futures-channel = "0.3"
-futures-sink = "0.3"
-futures-util = "0.3"
-tokio = { version = "0.2", features = ["rt-core", "net", "time"] }
-tokio-util = { version = "0.3", features = ["codec"] }
+bytes = "^0.6.0"
+log = "^0.4.11"
+futures-channel = "^0.3.7"
+futures-sink = "^0.3.7"
+futures-util = "^0.3.7"
+tokio = { version = "^0.3.2", features = ["net", "time"] }
+tokio-util = { version = "^0.5", features = ["codec"] }
 
 [dev-dependencies]
-env_logger = "0.7"
-futures = "0.3"
-tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
+env_logger = "^0.8.1"
+futures = "^0.3.7"
+tokio = { version = "^0.3.2", features = ["full"] }
