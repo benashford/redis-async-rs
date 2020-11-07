@@ -34,9 +34,11 @@ enum PubsubEvent {
     /// The: topic, sink to send messages through, and a oneshot to signal subscription has
     /// occurred.
     Subscribe(String, PubsubSink, oneshot::Sender<()>),
+    Psubscribe(String, PubsubSink, oneshot::Sender<()>),
     /// The name of the topic to unsubscribe from. Unsubscription will be signaled by the stream
     /// closing without error.
     Unsubscribe(String),
+    Punsubscribe(String),
 }
 
 type PubsubStreamInner = mpsc::UnboundedReceiver<Result<resp::RespValue, error::Error>>;
@@ -51,8 +53,10 @@ struct PubsubConnectionInner {
     out_rx: Fuse<mpsc::UnboundedReceiver<PubsubEvent>>,
     /// Current subscriptions
     subscriptions: BTreeMap<String, PubsubSink>,
+    psubscriptions: BTreeMap<String, PubsubSink>,
     /// Subscriptions that have not yet been confirmed
     pending_subs: BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
+    pending_psubs: BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
     /// Any incomplete messages to be sent...
     send_pending: Option<resp::RespValue>,
 }
@@ -63,7 +67,9 @@ impl PubsubConnectionInner {
             connection: con,
             out_rx: out_rx.fuse(),
             subscriptions: BTreeMap::new(),
+            psubscriptions: BTreeMap::new(),
             pending_subs: BTreeMap::new(),
+            pending_psubs: BTreeMap::new(),
             send_pending: None,
         }
     }
@@ -106,7 +112,12 @@ impl PubsubConnectionInner {
                             self.pending_subs.insert(topic.clone(), (sender, signal));
                             resp_array!["SUBSCRIBE", topic]
                         }
+                        PubsubEvent::Psubscribe(topic, sender, signal) => {
+                            self.pending_psubs.insert(topic.clone(), (sender, signal));
+                            resp_array!["PSUBSCRIBE", topic]
+                        }
                         PubsubEvent::Unsubscribe(topic) => resp_array!["UNSUBSCRIBE", topic],
+                        PubsubEvent::Punsubscribe(topic) => resp_array!["PUNSUBSCRIBE", topic],
                     };
                     if !self.do_send(cx, message)? {
                         return Ok(());
@@ -125,6 +136,12 @@ impl PubsubConnectionInner {
                 messages.pop(),
             ) {
                 (Some(msg), Some(topic), Some(message_type), None) => {
+                    match (msg, String::from_resp(topic), message_type) {
+                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
+                        _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
+                    }
+                }
+                (Some(msg), Some(_), Some(topic), Some(message_type)) => {
                     match (msg, String::from_resp(topic), message_type) {
                         (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
@@ -158,6 +175,20 @@ impl PubsubConnectionInner {
                     )));
                 }
             },
+            b"psubscribe" => match self.pending_psubs.remove(&topic) {
+                Some((sender, signal)) => {
+                    self.psubscriptions.insert(topic, sender);
+                    signal
+                        .send(())
+                        .map_err(|()| error::internal("Error confirming subscription"))?
+                }
+                None => {
+                    return Err(error::internal(format!(
+                        "Received unexpected subscribe notification for topic: {}",
+                        topic
+                    )));
+                }
+            },
             b"unsubscribe" => {
                 match self.subscriptions.entry(topic) {
                     Entry::Occupied(entry) => {
@@ -174,7 +205,32 @@ impl PubsubConnectionInner {
                     return Ok(false);
                 }
             }
+            b"punsubscribe" => {
+                match self.psubscriptions.entry(topic) {
+                    Entry::Occupied(entry) => {
+                        entry.remove_entry();
+                    }
+                    Entry::Vacant(vacant) => {
+                        return Err(error::internal(format!(
+                            "Unexpected unsubscribe message: {}",
+                            vacant.key()
+                        )));
+                    }
+                }
+                if self.psubscriptions.is_empty() {
+                    return Ok(false);
+                }
+            }
             b"message" => match self.subscriptions.get(&topic) {
+                Some(sender) => sender.unbounded_send(Ok(msg)).expect("Cannot send message"),
+                None => {
+                    return Err(error::internal(format!(
+                        "Unexpected message on topic: {}",
+                        topic
+                    )));
+                }
+            },
+            b"pmessage" => match self.psubscriptions.get(&topic) {
                 Some(sender) => sender.unbounded_send(Ok(msg)).expect("Cannot send message"),
                 None => {
                     return Err(error::internal(format!(
@@ -210,6 +266,12 @@ impl PubsubConnectionInner {
                             )))
                             .unwrap();
                         }
+                        for psub in self.psubscriptions.values() {
+                            psub.unbounded_send(Err(error::Error::Connection(
+                                ConnectionReason::NotConnected,
+                            )))
+                            .unwrap();
+                        }
                         return Err(error::Error::Connection(ConnectionReason::NotConnected));
                     }
                 }
@@ -222,6 +284,13 @@ impl PubsubConnectionInner {
                 Poll::Ready(Some(Err(e))) => {
                     for sub in self.subscriptions.values() {
                         sub.unbounded_send(Err(error::unexpected(format!(
+                            "Connection is in the process of failing due to: {}",
+                            e
+                        ))))
+                        .unwrap();
+                    }
+                    for psub in self.psubscriptions.values() {
+                        psub.unbounded_send(Err(error::unexpected(format!(
                             "Connection is in the process of failing due to: {}",
                             e
                         ))))
@@ -319,6 +388,22 @@ impl PubsubConnection {
         }
     }
 
+    pub async fn psubscribe(&self, topic: &str) -> Result<PubsubStream, error::Error> {
+        let (tx, rx) = mpsc::unbounded();
+        let (signal_t, signal_r) = oneshot::channel();
+        self.out_tx_c
+            .do_work(PubsubEvent::Psubscribe(topic.to_owned(), tx, signal_t))?;
+
+        match signal_r.await {
+            Ok(_) => Ok(PubsubStream {
+                topic: topic.to_owned(),
+                underlying: rx,
+                con: self.clone(),
+            }),
+            Err(_) => Err(error::internal("Subscription failed, try again later...")),
+        }
+    }
+
     /// Tells the client to unsubscribe from a particular topic. This will return immediately, the
     /// actual unsubscription will be confirmed when the stream returned from `subscribe` ends.
     pub fn unsubscribe<T: Into<String>>(&self, topic: T) {
@@ -327,6 +412,14 @@ impl PubsubConnection {
         let _ = self
             .out_tx_c
             .do_work(PubsubEvent::Unsubscribe(topic.into()));
+    }
+
+    pub fn punsubscribe<T: Into<String>>(&self, topic: T) {
+        // Ignoring any results, as any errors communicating with Redis would de-facto unsubscribe
+        // anyway, and would be reported/logged elsewhere
+        let _ = self
+            .out_tx_c
+            .do_work(PubsubEvent::Punsubscribe(topic.into()));
     }
 }
 
@@ -358,7 +451,7 @@ mod test {
     use crate::{client, resp};
 
     #[tokio::test]
-    async fn pubsub_test() {
+    async fn subscribe_test() {
         let addr = "127.0.0.1:6379".parse().unwrap();
         let paired_c = client::paired_connect(&addr);
         let pubsub_c = super::pubsub_connect(&addr);
@@ -385,5 +478,36 @@ mod test {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], "test-message".into());
         assert_eq!(result[1], "test-message2".into());
+    }
+
+    #[tokio::test]
+    async fn psubscribe_test() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let paired_c = client::paired_connect(&addr);
+        let pubsub_c = super::pubsub_connect(&addr);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let topic_messages = pubsub
+            .psubscribe("test.*")
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array!["PUBLISH", "test.1", "test-message-1"]);
+        paired.send_and_forget(resp_array!["PUBLISH", "test.2", "test-message-2"]);
+        let _: resp::RespValue = paired
+            .send(resp_array!["PUBLISH", "test.3", "test-message-3"])
+            .await
+            .expect("Cannot send to topic");
+
+        let result: Vec<_> = topic_messages
+            .take(3)
+            .try_collect()
+            .await
+            .expect("Cannot collect two values");
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "test-message-1".into());
+        assert_eq!(result[1], "test-message-2".into());
+        assert_eq!(result[2], "test-message-3".into());
     }
 }
