@@ -317,7 +317,7 @@ where
 /// ```
 #[macro_export]
 macro_rules! resp_array {
-    ($($e:expr),*) => {
+    ($($e:expr),* $(,)?) => {
         {
             $crate::resp::RespValue::Array(vec![
                 $(
