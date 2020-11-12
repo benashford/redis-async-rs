@@ -388,18 +388,30 @@ pub trait ToRespInteger {
     fn to_resp_integer(self) -> RespValue;
 }
 
-macro_rules! integer_into_resp {
-    ($t:ty) => {
-        into_resp!($t, to_resp_integer);
-    };
-}
-
-impl ToRespInteger for usize {
-    fn to_resp_integer(self) -> RespValue {
-        RespValue::Integer(self as i64)
+impl<T: ToRespInteger> From<T> for RespValue {
+    fn from(value: T) -> Self {
+        value.to_resp_integer()
     }
 }
-integer_into_resp!(usize);
+
+macro_rules! to_resp_integer_impls {
+    ($($int:ty,)+) => {
+        $(
+            impl ToRespInteger for $int {
+                fn to_resp_integer(self) -> RespValue {
+                    RespValue::Integer(self as i64)
+                }
+            }
+        )+
+    }
+}
+
+to_resp_integer_impls! {
+    i8, i16, i32, i64, isize,
+    u8, u16, u32, u64, usize,
+    i128,
+    u128,
+}
 
 /// Codec to read frames
 pub struct RespCodec;
