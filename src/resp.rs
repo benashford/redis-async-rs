@@ -407,10 +407,8 @@ macro_rules! to_resp_integer_impls {
 }
 
 to_resp_integer_impls! {
-    i8, i16, i32, i64, isize,
-    u8, u16, u32, u64, usize,
-    i128,
-    u128,
+    i32, i64, isize,
+    u32, u64, usize
 }
 
 /// Codec to read frames
