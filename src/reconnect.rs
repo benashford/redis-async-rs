@@ -8,12 +8,11 @@
  * except according to those terms.
  */
 
-use std::{
-    fmt,
-    future::Future,
-    sync::{Arc, Mutex, RwLock},
-    time::Duration,
-};
+use std::fmt;
+use std::future::Future;
+use std::mem;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use futures_util::{
     future::{self, Either},
@@ -30,7 +29,7 @@ type ConnFn<T> = dyn Fn() -> Box<dyn Future<Output = Result<T, error::Error>> + 
     + Sync;
 
 struct ReconnectInner<A, T> {
-    state: RwLock<ReconnectState<T>>,
+    state: Mutex<ReconnectState<T>>,
     work_fn: Box<WorkFn<T, A>>,
     conn_fn: Box<ConnFn<T>>,
 }
@@ -67,12 +66,13 @@ where
     T: Clone + Send + Sync + 'static,
 {
     let r = Reconnect(Arc::new(ReconnectInner {
-        state: RwLock::new(ReconnectState::NotConnected),
+        state: Mutex::new(ReconnectState::NotConnected),
 
         work_fn: Box::new(w),
         conn_fn: Box::new(c),
     }));
-    r.reconnect().await?;
+    let state = r.0.state.lock().expect("Poisoned lock");
+    r.reconnect(state).await?;
     Ok(r)
 }
 
@@ -120,66 +120,61 @@ where
         }
     }
 
-    // Called when a bad situation has been discovered, force the connections to re-connect.
-    fn disconnect(&self) {
-        let mut state = self.0.state.write().expect("Cannot obtain a write lock");
-        *state = NotConnected;
-    }
-
     pub(crate) fn do_work(&self, a: A) -> Result<(), error::Error> {
-        let rv = {
-            let state = self.0.state.read().expect("Cannot obtain read lock");
-            match *state {
-                NotConnected => Err(error::Error::Connection(ConnectionReason::NotConnected)),
-                Connected(ref t) => {
-                    let success = self.call_work(t, a)?;
-                    if !success {
-                        drop(state);
-                        self.disconnect();
-                        self.reconnect_spawn();
-                    }
-                    return Ok(());
-                }
-                ConnectionFailed(ref e) => {
-                    let mut lock = e.lock().expect("Poisioned lock");
-                    let e = match lock.take() {
-                        Some(e) => e,
-                        None => error::Error::Connection(ConnectionReason::NotConnected),
-                    };
-                    Err(e)
-                }
-                Connecting => {
-                    return Err(error::Error::Connection(ConnectionReason::Connecting));
-                }
+        let mut state = self.0.state.lock().expect("Cannot obtain read lock");
+        match *state {
+            NotConnected => {
+                self.reconnect_spawn(state);
+                Err(error::Error::Connection(ConnectionReason::NotConnected))
             }
-        };
-        self.reconnect_spawn();
-        rv
+            Connected(ref t) => {
+                let success = self.call_work(t, a)?;
+                if !success {
+                    *state = NotConnected;
+                    self.reconnect_spawn(state);
+                }
+                Ok(())
+            }
+            ConnectionFailed(ref e) => {
+                let mut lock = e.lock().expect("Poisioned lock");
+                let e = match lock.take() {
+                    Some(e) => e,
+                    None => error::Error::Connection(ConnectionReason::NotConnected),
+                };
+                mem::drop(lock);
+
+                *state = NotConnected;
+                self.reconnect_spawn(state);
+                Err(e)
+            }
+            Connecting => Err(error::Error::Connection(ConnectionReason::Connecting)),
+        }
     }
 
     /// Returns a future that completes when the connection is established or failed to establish
     /// used only for timing.
-    fn reconnect(&self) -> impl Future<Output = Result<(), error::Error>> + Send {
-        {
-            let mut state = self.0.state.write().expect("Cannot obtain write lock");
+    fn reconnect(
+        &self,
+        mut state: MutexGuard<ReconnectState<T>>,
+    ) -> impl Future<Output = Result<(), error::Error>> + Send {
+        log::info!("Attempting to reconnect, current state: {:?}", *state);
 
-            log::info!("Attempting to reconnect, current state: {:?}", *state);
-
-            match *state {
-                Connected(_) => {
-                    return Either::Right(future::err(error::Error::Connection(
-                        ConnectionReason::Connected,
-                    )));
-                }
-                Connecting => {
-                    return Either::Right(future::err(error::Error::Connection(
-                        ConnectionReason::Connecting,
-                    )));
-                }
-                NotConnected | ConnectionFailed(_) => (),
+        match *state {
+            Connected(_) => {
+                return Either::Right(future::err(error::Error::Connection(
+                    ConnectionReason::Connected,
+                )));
             }
-            *state = ReconnectState::Connecting;
+            Connecting => {
+                return Either::Right(future::err(error::Error::Connection(
+                    ConnectionReason::Connecting,
+                )));
+            }
+            NotConnected | ConnectionFailed(_) => (),
         }
+        *state = ReconnectState::Connecting;
+
+        mem::drop(state);
 
         let reconnect = self.clone();
 
@@ -192,7 +187,7 @@ where
                 ))),
             };
 
-            let mut state = reconnect.0.state.write().expect("Cannot obtain write lock");
+            let mut state = reconnect.0.state.lock().expect("Cannot obtain write lock");
 
             match *state {
                 NotConnected | Connecting => match connection {
@@ -217,16 +212,11 @@ where
         Either::Left(connection_f)
     }
 
-    fn reconnect_spawn(&self) {
+    fn reconnect_spawn(&self, state: MutexGuard<ReconnectState<T>>) {
         let reconnect_f = self
-            .reconnect()
+            .reconnect(state)
             .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e));
 
         tokio::spawn(reconnect_f);
-
-        // let mut executor = DefaultExecutor::current();
-        // executor
-        //     .spawn(Box::new(reconnect_f))
-        //     .expect("Cannot spawn asynchronous reconnection");
     }
 }
