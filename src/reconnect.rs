@@ -71,8 +71,11 @@ where
         work_fn: Box::new(w),
         conn_fn: Box::new(c),
     }));
-    let state = r.0.state.lock().expect("Poisoned lock");
-    r.reconnect(state).await?;
+    let rf = {
+        let state = r.0.state.lock().expect("Poisoned lock");
+        r.reconnect(state)
+    };
+    rf.await?;
     Ok(r)
 }
 
