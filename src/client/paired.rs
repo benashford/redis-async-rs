@@ -11,7 +11,7 @@
 use std::{
     collections::VecDeque,
     future::Future,
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -196,12 +196,83 @@ pub struct PairedConnection {
 
 async fn inner_conn_fn(
     addr: SocketAddr,
+    username: Option<String>,
+    password: Option<String>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let connection = connect(&addr).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
+
+    if let Some(password) = password {
+        let mut args: resp::RespValue = resp_array!["AUTH"];
+        if let Some(username) = username {
+            args.push(username);
+        }
+        args.push(password);
+        let (tx, rx) = oneshot::channel();
+        out_tx.unbounded_send((args, tx))?;
+        match rx.await {
+            Ok(resp::RespValue::SimpleString(_)) => (),
+            Ok(resp::RespValue::Error(e)) => return Err(error::Error::Remote(e)),
+            Ok(_) => return Err(error::internal("Unexpected response to AUTH")),
+            Err(_) => {
+                return Err(error::internal(
+                    "Connection canceled while authenticating".to_string(),
+                ))
+            }
+        }
+    }
     Ok(out_tx)
+}
+
+/// Connection builder for construction a PairedConnection
+pub struct PairedConnectionBuilder {
+    addr: SocketAddr,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl PairedConnectionBuilder {
+    pub fn new<A: ToSocketAddrs>(addr: A) -> Result<Self, error::Error> {
+        Ok(Self {
+            addr: addr.to_socket_addrs()?.next().ok_or_else(|| {
+                error::Error::Connection(error::ConnectionReason::ConnectionFailed)
+            })?,
+            username: None,
+            password: None,
+        })
+    }
+
+    /// Set the username used when connecting
+    pub fn password<V: Into<String>>(&mut self, password: V) -> &mut Self {
+        self.password = Some(password.into());
+        self
+    }
+
+    /// Set the password used when connecting
+    pub fn username<V: Into<String>>(&mut self, username: V) -> &mut Self {
+        self.username = Some(username.into());
+        self
+    }
+
+    pub async fn connect(&self) -> Result<PairedConnection, error::Error> {
+        let addr = self.addr;
+        let username = self.username.to_owned();
+        let password = self.password.to_owned();
+        let reconnecting_con = reconnect(
+            |con: &mpsc::UnboundedSender<SendPayload>, act| {
+                con.unbounded_send(act).map_err(|e| e.into())
+            },
+            move || {
+                let con_f = inner_conn_fn(addr, username.clone(), password.clone());
+                Box::new(Box::pin(con_f))
+            },
+        );
+        Ok(PairedConnection {
+            out_tx_c: Arc::new(reconnecting_con.await?),
+        })
+    }
 }
 
 /// The default starting point to use most default Redis functionality.
@@ -216,19 +287,7 @@ async fn inner_conn_fn(
 /// to be tried against the connection to trigger the re-connection attempt; this means at least
 /// one command will definitely fail in a disconnect/reconnect scenario.
 pub async fn paired_connect(addr: &SocketAddr) -> Result<PairedConnection, error::Error> {
-    let addr = *addr;
-    let reconnecting_con = reconnect(
-        |con: &mpsc::UnboundedSender<SendPayload>, act| {
-            con.unbounded_send(act).map_err(|e| e.into())
-        },
-        move || {
-            let con_f = inner_conn_fn(addr);
-            Box::new(Box::pin(con_f))
-        },
-    );
-    Ok(PairedConnection {
-        out_tx_c: Arc::new(reconnecting_con.await?),
-    })
+    PairedConnectionBuilder::new(addr)?.connect().await
 }
 
 impl PairedConnection {
