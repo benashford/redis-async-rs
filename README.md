@@ -20,9 +20,11 @@ Version 0.5 introduces minor changes to error handling, and reconnect behaviour 
 
 In summary: a `PairedConnection` or `PubsubConnection` will remain valid and will attempt to reconnect when a connection drops (however, if a `PubsubConnection` drops, applications will need to re-subscribe). If a connection does drop, re-connection occurs in the background, calls to the connection in the meantime will error with `Error::Connection` the details will explain why, including if a reconnection failed. Clients should retry until connection succeeds in accordance with the needs of the particular application.
 
-### Minimum rustc version
+Version 0.8 contains minor refactoring with an obvious upgrade path.
 
-Version 0.6 requires rustc 1.39.0 or higher.
+### Tokio compatibility
+
+Version 0.8 supports both Tokio 0.3 and Tokio 0.2 (because many other libraries are Tokio 0.2 only still). Tokio 0.3 is the default. To enable Tokio 0.2: disable default features and enable `tokio02`.
 
 ## Other clients
 
