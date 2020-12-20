@@ -71,6 +71,19 @@ impl RespValue {
         }
         self
     }
+
+    /// Push item to Resp array
+    ///
+    /// This will panic if called for anything other than arrays
+    pub fn push<T : Into<RespValue>>(&mut self, item: T)
+    {
+        match self {
+            RespValue::Array(ref mut vals) => {
+                vals.push(item.into());
+            }
+            _ => panic!("Can only push to arrays"),
+        }
+    }
 }
 
 /// A trait to be implemented for every time which can be read from a RESP value.
