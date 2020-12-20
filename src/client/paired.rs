@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,14 +8,13 @@
  * except according to those terms.
  */
 
-use std::{
-    collections::VecDeque,
-    future::Future,
-    net::{SocketAddr, ToSocketAddrs},
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::collections::VecDeque;
+use std::future::Future;
+use std::mem;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
@@ -102,7 +101,7 @@ impl PairedConnectionInner {
 
     fn poll_start_send(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
         let mut status = SendStatus::Ok;
-        ::std::mem::swap(&mut status, &mut self.send_status);
+        mem::swap(&mut status, &mut self.send_status);
 
         let message = match status {
             SendStatus::End => {
@@ -196,8 +195,8 @@ pub struct PairedConnection {
 
 async fn inner_conn_fn(
     addr: SocketAddr,
-    username: Option<String>,
-    password: Option<String>,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let connection = connect(&addr).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
@@ -226,52 +225,60 @@ async fn inner_conn_fn(
     Ok(out_tx)
 }
 
+#[derive(Debug)]
 /// Connection builder for construction a PairedConnection
 pub struct PairedConnectionBuilder {
     addr: SocketAddr,
-    username: Option<String>,
-    password: Option<String>,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
 }
 
 impl PairedConnectionBuilder {
     pub fn new<A: ToSocketAddrs>(addr: A) -> Result<Self, error::Error> {
         Ok(Self {
-            addr: addr.to_socket_addrs()?.next().ok_or_else(|| {
-                error::Error::Connection(error::ConnectionReason::ConnectionFailed)
-            })?,
+            addr: addr
+                .to_socket_addrs()?
+                .next()
+                .ok_or(error::Error::Connection(
+                    error::ConnectionReason::ConnectionFailed,
+                ))?,
             username: None,
             password: None,
         })
     }
 
     /// Set the username used when connecting
-    pub fn password<V: Into<String>>(&mut self, password: V) -> &mut Self {
+    pub fn password<V: Into<Arc<str>>>(&mut self, password: V) -> &mut Self {
         self.password = Some(password.into());
         self
     }
 
     /// Set the password used when connecting
-    pub fn username<V: Into<String>>(&mut self, username: V) -> &mut Self {
+    pub fn username<V: Into<Arc<str>>>(&mut self, username: V) -> &mut Self {
         self.username = Some(username.into());
         self
     }
 
-    pub async fn connect(&self) -> Result<PairedConnection, error::Error> {
+    pub fn connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
         let addr = self.addr;
-        let username = self.username.to_owned();
-        let password = self.password.to_owned();
-        let reconnecting_con = reconnect(
-            |con: &mpsc::UnboundedSender<SendPayload>, act| {
-                con.unbounded_send(act).map_err(|e| e.into())
-            },
-            move || {
-                let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-                Box::new(Box::pin(con_f))
-            },
-        );
-        Ok(PairedConnection {
-            out_tx_c: Arc::new(reconnecting_con.await?),
-        })
+        let username = self.username.clone();
+        let password = self.password.clone();
+
+        let work_fn = |con: &mpsc::UnboundedSender<SendPayload>, act| {
+            con.unbounded_send(act).map_err(|e| e.into())
+        };
+
+        let conn_fn = move || {
+            let con_f = inner_conn_fn(addr, username.clone(), password.clone());
+            Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
+        };
+
+        let reconnecting_con = reconnect(work_fn, conn_fn);
+        async {
+            Ok(PairedConnection {
+                out_tx_c: Arc::new(reconnecting_con.await?),
+            })
+        }
     }
 }
 
@@ -343,6 +350,8 @@ impl PairedConnection {
 
 #[cfg(test)]
 mod test {
+    use super::PairedConnectionBuilder;
+
     #[tokio::test]
     async fn can_paired_connect() {
         let addr = "127.0.0.1:6379".parse().unwrap();
@@ -398,5 +407,16 @@ mod test {
         let last_future = futures.remove(999);
         let result: String = last_future.await.expect("Cannot wait for result");
         assert_eq!(result, "999");
+    }
+
+    #[tokio::test]
+    async fn test_builder() {
+        let mut builder =
+            PairedConnectionBuilder::new("127.0.0.1:6379").expect("Cannot construct builder...");
+        builder.password("password");
+        builder.username(String::from("username"));
+        let connection_result = builder.connect().await;
+        // Expecting an error as these aren't the correct username/password
+        assert!(connection_result.is_err());
     }
 }

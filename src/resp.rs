@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,11 +10,11 @@
 
 //! An implementation of the RESP protocol
 
-use std::{
-    collections::HashMap,
-    hash::{BuildHasher, Hash},
-    io, str,
-};
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash};
+use std::io;
+use std::str;
+use std::sync::Arc;
 
 use bytes::{Buf, BufMut, BytesMut};
 
@@ -75,8 +75,7 @@ impl RespValue {
     /// Push item to Resp array
     ///
     /// This will panic if called for anything other than arrays
-    pub fn push<T : Into<RespValue>>(&mut self, item: T)
-    {
+    pub fn push<T: Into<RespValue>>(&mut self, item: T) {
         match self {
             RespValue::Array(ref mut vals) => {
                 vals.push(item.into());
@@ -396,6 +395,13 @@ impl ToRespString for Vec<u8> {
     }
 }
 string_into_resp!(Vec<u8>);
+
+impl ToRespString for Arc<str> {
+    fn to_resp_string(self) -> RespValue {
+        RespValue::BulkString(self.as_bytes().into())
+    }
+}
+string_into_resp!(Arc<str>);
 
 pub trait ToRespInteger {
     fn to_resp_integer(self) -> RespValue;
