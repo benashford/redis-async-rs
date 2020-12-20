@@ -60,4 +60,4 @@ pub mod client;
 
 pub mod error;
 
-pub mod reconnect;
+pub(crate) mod reconnect;
