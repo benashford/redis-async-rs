@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::mem;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -20,7 +20,10 @@ use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{future, stream::StreamExt};
 
-use super::connect::{connect, RespConnection};
+use super::{
+    connect::{connect_with_auth, RespConnection},
+    ConnectionBuilder,
+};
 
 use crate::{
     error,
@@ -198,68 +201,17 @@ async fn inner_conn_fn(
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
-    let connection = connect(&addr).await?;
+    let username = username.as_ref().map(|u| u.as_ref());
+    let password = password.as_ref().map(|p| p.as_ref());
+    let connection = connect_with_auth(&addr, username, password).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
-
-    if let Some(password) = password {
-        let mut args: resp::RespValue = resp_array!["AUTH"];
-        if let Some(username) = username {
-            args.push(username);
-        }
-        args.push(password);
-        let (tx, rx) = oneshot::channel();
-        out_tx.unbounded_send((args, tx))?;
-        match rx.await {
-            Ok(resp::RespValue::SimpleString(_)) => (),
-            Ok(resp::RespValue::Error(e)) => return Err(error::Error::Remote(e)),
-            Ok(_) => return Err(error::internal("Unexpected response to AUTH")),
-            Err(_) => {
-                return Err(error::internal(
-                    "Connection canceled while authenticating".to_string(),
-                ))
-            }
-        }
-    }
     Ok(out_tx)
 }
 
-#[derive(Debug)]
-/// Connection builder for construction a PairedConnection
-pub struct PairedConnectionBuilder {
-    addr: SocketAddr,
-    username: Option<Arc<str>>,
-    password: Option<Arc<str>>,
-}
-
-impl PairedConnectionBuilder {
-    pub fn new<A: ToSocketAddrs>(addr: A) -> Result<Self, error::Error> {
-        Ok(Self {
-            addr: addr
-                .to_socket_addrs()?
-                .next()
-                .ok_or(error::Error::Connection(
-                    error::ConnectionReason::ConnectionFailed,
-                ))?,
-            username: None,
-            password: None,
-        })
-    }
-
-    /// Set the username used when connecting
-    pub fn password<V: Into<Arc<str>>>(&mut self, password: V) -> &mut Self {
-        self.password = Some(password.into());
-        self
-    }
-
-    /// Set the password used when connecting
-    pub fn username<V: Into<Arc<str>>>(&mut self, username: V) -> &mut Self {
-        self.username = Some(username.into());
-        self
-    }
-
-    pub fn connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
+impl ConnectionBuilder {
+    pub fn paired_connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
         let addr = self.addr;
         let username = self.username.clone();
         let password = self.password.clone();
@@ -293,8 +245,8 @@ impl PairedConnectionBuilder {
 /// the client's responsibility to retry commands as applicable. Also, at least one command needs
 /// to be tried against the connection to trigger the re-connection attempt; this means at least
 /// one command will definitely fail in a disconnect/reconnect scenario.
-pub async fn paired_connect(addr: &SocketAddr) -> Result<PairedConnection, error::Error> {
-    PairedConnectionBuilder::new(addr)?.connect().await
+pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
+    ConnectionBuilder::new(addr)?.paired_connect().await
 }
 
 impl PairedConnection {
@@ -350,13 +302,13 @@ impl PairedConnection {
 
 #[cfg(test)]
 mod test {
-    use super::PairedConnectionBuilder;
+    use super::ConnectionBuilder;
 
     #[tokio::test]
     async fn can_paired_connect() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connection = super::paired_connect(&addr)
+        let connection = super::paired_connect(addr)
             .await
             .expect("Cannot establish connection");
 
@@ -375,7 +327,7 @@ mod test {
     async fn complex_paired_connect() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connection = super::paired_connect(&addr)
+        let connection = super::paired_connect(addr)
             .await
             .expect("Cannot establish connection");
 
@@ -395,7 +347,7 @@ mod test {
     async fn sending_a_lot_of_data_test() {
         let addr = "127.0.0.1:6379".parse().unwrap();
 
-        let connection = super::paired_connect(&addr)
+        let connection = super::paired_connect(addr)
             .await
             .expect("Cannot connect to Redis");
         let mut futures = Vec::with_capacity(1000);
@@ -412,10 +364,10 @@ mod test {
     #[tokio::test]
     async fn test_builder() {
         let mut builder =
-            PairedConnectionBuilder::new("127.0.0.1:6379").expect("Cannot construct builder...");
+            ConnectionBuilder::new("127.0.0.1:6379").expect("Cannot construct builder...");
         builder.password("password");
         builder.username(String::from("username"));
-        let connection_result = builder.connect().await;
+        let connection_result = builder.paired_connect().await;
         // Expecting an error as these aren't the correct username/password
         assert!(connection_result.is_err());
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,6 +7,12 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
+
+#[cfg(feature = "tokio02")]
+extern crate tokio_02 as tokio;
+
+#[cfg(feature = "tokio03")]
+extern crate tokio_03 as tokio;
 
 use std::env;
 
@@ -29,7 +35,7 @@ async fn main() {
         .parse()
         .unwrap();
 
-    let connection = client::paired_connect(&addr)
+    let connection = client::paired_connect(addr)
         .await
         .expect("Cannot open connection");
 
