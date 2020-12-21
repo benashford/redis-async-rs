@@ -624,6 +624,7 @@ fn decode_integer(buf: &mut BytesMut, idx: usize) -> DecodeResult {
 }
 
 /// A simple string is any series of bytes that ends with `\r\n`
+#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
 fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
@@ -631,6 +632,7 @@ fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     }
 }
 
+#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
 fn decode_error(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
