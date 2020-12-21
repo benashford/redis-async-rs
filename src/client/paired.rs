@@ -18,7 +18,10 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{future, stream::StreamExt};
+use futures_util::{
+    future::{self, TryFutureExt},
+    stream::StreamExt,
+};
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -226,11 +229,9 @@ impl ConnectionBuilder {
         };
 
         let reconnecting_con = reconnect(work_fn, conn_fn);
-        async {
-            Ok(PairedConnection {
-                out_tx_c: Arc::new(reconnecting_con.await?),
-            })
-        }
+        reconnecting_con.map_ok(|con| PairedConnection {
+            out_tx_c: Arc::new(con),
+        })
     }
 }
 

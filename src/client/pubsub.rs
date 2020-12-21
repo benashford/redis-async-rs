@@ -17,7 +17,10 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::stream::{Fuse, Stream, StreamExt};
+use futures_util::{
+    future::TryFutureExt,
+    stream::{Fuse, Stream, StreamExt},
+};
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -360,11 +363,9 @@ impl ConnectionBuilder {
                 Box::pin(con_f)
             },
         );
-        async {
-            Ok(PubsubConnection {
-                out_tx_c: Arc::new(reconnecting_f.await?),
-            })
-        }
+        reconnecting_f.map_ok(|con| PubsubConnection {
+            out_tx_c: Arc::new(con),
+        })
     }
 }
 
