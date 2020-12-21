@@ -11,6 +11,7 @@
 use std::fmt;
 use std::future::Future;
 use std::mem;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -24,9 +25,8 @@ use tokio::time::timeout;
 use crate::error::{self, ConnectionReason};
 
 type WorkFn<T, A> = dyn Fn(&T, A) -> Result<(), error::Error> + Send + Sync;
-type ConnFn<T> = dyn Fn() -> Box<dyn Future<Output = Result<T, error::Error>> + Unpin + Send + Sync>
-    + Send
-    + Sync;
+type ConnFn<T> =
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<T, error::Error>> + Send + Sync>> + Send + Sync;
 
 struct ReconnectInner<A, T> {
     state: Mutex<ReconnectState<T>>,
@@ -59,7 +59,7 @@ pub(crate) async fn reconnect<A, T, W, C>(w: W, c: C) -> Result<Reconnect<A, T>,
 where
     A: Send + 'static,
     W: Fn(&T, A) -> Result<(), error::Error> + Send + Sync + 'static,
-    C: Fn() -> Box<dyn Future<Output = Result<T, error::Error>> + Unpin + Send + Sync>
+    C: Fn() -> Pin<Box<dyn Future<Output = Result<T, error::Error>> + Send + Sync>>
         + Send
         + Sync
         + 'static,

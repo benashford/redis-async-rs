@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,12 +8,14 @@
  * except according to those terms.
  */
 
-use std::{io, net::SocketAddr};
+use std::net::SocketAddr;
+
+use futures_util::{SinkExt, StreamExt};
 
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::resp;
+use crate::{error, resp};
 
 pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 
@@ -32,9 +34,43 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, io::Error> {
+pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect(addr).await?;
     Ok(resp::RespCodec.framed(tcp_stream))
+}
+
+pub async fn connect_with_auth(
+    addr: &SocketAddr,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<RespConnection, error::Error> {
+    let mut connection = connect(addr).await?;
+
+    if let Some(password) = password {
+        let mut auth = resp_array!["AUTH"];
+
+        if let Some(username) = username {
+            auth.push(username);
+        }
+
+        auth.push(password);
+
+        connection.send(auth).await?;
+        match connection.next().await {
+            Some(Ok(value)) => match resp::FromResp::from_resp(value) {
+                Ok(()) => (),
+                Err(e) => return Err(e),
+            },
+            Some(Err(e)) => return Err(e),
+            None => {
+                return Err(error::internal(
+                    "Connection closed before authentication complete",
+                ))
+            }
+        }
+    }
+
+    Ok(connection)
 }
 
 #[cfg(test)]

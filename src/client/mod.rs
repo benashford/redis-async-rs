@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -23,10 +23,12 @@
 pub mod connect;
 #[macro_use]
 pub mod paired;
+mod builder;
 pub mod pubsub;
 
 pub use self::{
+    builder::ConnectionBuilder,
     connect::connect,
-    paired::{paired_connect, PairedConnection, PairedConnectionBuilder},
+    paired::{paired_connect, PairedConnection},
     pubsub::{pubsub_connect, PubsubConnection},
 };
