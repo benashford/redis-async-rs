@@ -14,6 +14,9 @@ extern crate tokio_02 as tokio;
 #[cfg(feature = "tokio03")]
 extern crate tokio_03 as tokio;
 
+#[cfg(feature = "tokio10")]
+extern crate tokio_10 as tokio;
+
 use std::env;
 
 use futures::StreamExt;

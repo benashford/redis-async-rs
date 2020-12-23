@@ -67,6 +67,13 @@ extern crate tokio_03 as tokio;
 #[cfg(feature = "tokio03")]
 extern crate tokio_util_05 as tokio_util;
 
+#[cfg(feature = "tokio10")]
+extern crate bytes_10 as bytes;
+#[cfg(feature = "tokio10")]
+extern crate tokio_10 as tokio;
+#[cfg(feature = "tokio10")]
+extern crate tokio_util_06 as tokio_util;
+
 #[macro_use]
 pub mod resp;
 
