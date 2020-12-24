@@ -15,9 +15,12 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{error, resp};
+use crate::{
+    error,
+    protocol::{FromResp, RespCodec},
+};
 
-pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
+pub type RespConnection = Framed<TcpStream, RespCodec>;
 
 /// Connect to a Redis server and return a Future that resolves to a
 /// `RespConnection` for reading and writing asynchronously.
@@ -36,7 +39,7 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 /// single result, this library also implements `paired_connect`.
 pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect(addr).await?;
-    Ok(resp::RespCodec.framed(tcp_stream))
+    Ok(RespCodec.framed(tcp_stream))
 }
 
 pub async fn connect_with_auth(
@@ -57,7 +60,7 @@ pub async fn connect_with_auth(
 
         connection.send(auth).await?;
         match connection.next().await {
-            Some(Ok(value)) => match resp::FromResp::from_resp(value) {
+            Some(Ok(value)) => match FromResp::from_resp(value) {
                 Ok(()) => (),
                 Err(e) => return Err(e),
             },
@@ -80,7 +83,7 @@ mod test {
         stream::{self, StreamExt},
     };
 
-    use crate::resp;
+    use crate::protocol::resp;
 
     #[tokio::test]
     async fn can_connect() {

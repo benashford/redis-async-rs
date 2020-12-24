@@ -29,8 +29,8 @@ use super::{
 
 use crate::{
     error::{self, ConnectionReason},
+    protocol::resp::{self, FromResp},
     reconnect::{reconnect, Reconnect},
-    resp::{self, FromResp},
 };
 
 #[derive(Debug)]
@@ -466,7 +466,7 @@ impl Drop for PubsubStream {
 mod test {
     use futures::{try_join, StreamExt, TryStreamExt};
 
-    use crate::{client, resp};
+    use crate::{client, protocol::resp};
 
     #[tokio::test]
     async fn subscribe_test() {

@@ -60,13 +60,6 @@ extern crate tokio_02 as tokio;
 #[cfg(feature = "tokio02")]
 extern crate tokio_util_03 as tokio_util;
 
-#[cfg(feature = "tokio03")]
-extern crate bytes_06 as bytes;
-#[cfg(feature = "tokio03")]
-extern crate tokio_03 as tokio;
-#[cfg(feature = "tokio03")]
-extern crate tokio_util_05 as tokio_util;
-
 #[cfg(feature = "tokio10")]
 extern crate bytes_10 as bytes;
 #[cfg(feature = "tokio10")]
@@ -75,9 +68,8 @@ extern crate tokio_10 as tokio;
 extern crate tokio_util_06 as tokio_util;
 
 #[macro_use]
-pub mod resp;
+pub mod protocol;
 
-#[macro_use]
 pub mod client;
 
 pub mod error;

@@ -30,8 +30,8 @@ use super::{
 
 use crate::{
     error,
+    protocol::resp,
     reconnect::{reconnect, Reconnect},
-    resp,
 };
 
 /// The state of sending messages to a Redis server

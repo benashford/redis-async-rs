@@ -21,9 +21,9 @@
 //! * `pubsub_connect` is used for Redis's PUBSUB functionality.
 
 pub mod connect;
-#[macro_use]
-pub mod paired;
+
 mod builder;
+pub mod paired;
 pub mod pubsub;
 
 pub use self::{
