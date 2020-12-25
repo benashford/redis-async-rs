@@ -20,9 +20,10 @@ use futures_util::{
     TryFutureExt,
 };
 
-use tokio::time::timeout;
-
-use crate::error::{self, ConnectionReason};
+use crate::{
+    error::{self, ConnectionReason},
+    task::{spawn, timeout},
+};
 
 type WorkFn<T, A> = dyn Fn(&T, A) -> Result<(), error::Error> + Send + Sync;
 type ConnFn<T> =
@@ -183,8 +184,8 @@ where
 
         let connection_f = async move {
             let connection = match timeout(CONNECTION_TIMEOUT, (reconnect.0.conn_fn)()).await {
-                Ok(con_r) => con_r,
-                Err(_) => Err(error::internal(format!(
+                Some(con_r) => con_r,
+                None => Err(error::internal(format!(
                     "Connection timed-out after {} seconds",
                     CONNECTION_TIMEOUT_SECONDS
                 ))),
@@ -220,6 +221,6 @@ where
             .reconnect(state)
             .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e));
 
-        tokio::spawn(reconnect_f);
+        spawn(reconnect_f);
     }
 }

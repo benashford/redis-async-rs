@@ -13,6 +13,7 @@ pub(crate) mod resp;
 
 mod codec;
 
+#[cfg(feature = "tokio_codec")]
 pub(crate) use codec::tokio::RespCodec;
 
 pub use resp::{FromResp, RespValue};

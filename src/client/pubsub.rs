@@ -31,6 +31,7 @@ use crate::{
     error::{self, ConnectionReason},
     protocol::resp::{self, FromResp},
     reconnect::{reconnect, Reconnect},
+    task::spawn,
 };
 
 #[derive(Debug)]
@@ -339,7 +340,7 @@ async fn inner_conn_fn(
 
     let connection = connect_with_auth(&addr, username, password).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
-    tokio::spawn(async {
+    spawn(async {
         match PubsubConnectionInner::new(connection, out_rx).await {
             Ok(_) => (),
             Err(e) => log::error!("Pub/Sub error: {:?}", e),

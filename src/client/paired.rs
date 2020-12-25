@@ -32,6 +32,7 @@ use crate::{
     error,
     protocol::resp,
     reconnect::{reconnect, Reconnect},
+    task::spawn,
 };
 
 /// The state of sending messages to a Redis server
@@ -209,7 +210,8 @@ async fn inner_conn_fn(
     let connection = connect_with_auth(&addr, username, password).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
-    tokio::spawn(paired_connection_inner);
+    spawn(paired_connection_inner);
+
     Ok(out_tx)
 }
 
@@ -297,7 +299,7 @@ impl PairedConnection {
                 log::error!("Error in send_and_forget: {}", e);
             }
         };
-        tokio::spawn(forget_f);
+        spawn(forget_f);
     }
 }
 

@@ -8,19 +8,29 @@
  * except according to those terms.
  */
 
+#[cfg(feature = "with_async_std")]
+mod async_std;
+
 use std::net::SocketAddr;
+
+#[cfg(feature = "with_async_std")]
+use async_net::TcpStream;
 
 use futures_util::{SinkExt, StreamExt};
 
+#[cfg(feature = "with_tokio")]
 use tokio::net::TcpStream;
+#[cfg(feature = "with_tokio")]
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{
-    error,
-    protocol::{FromResp, RespCodec},
-};
+#[cfg(feature = "tokio_codec")]
+use crate::protocol::RespCodec;
+use crate::{error, protocol::FromResp};
 
+#[cfg(feature = "with_tokio")]
 pub type RespConnection = Framed<TcpStream, RespCodec>;
+#[cfg(feature = "with_async_std")]
+pub type RespConnection = async_std::RespTcpStream;
 
 /// Connect to a Redis server and return a Future that resolves to a
 /// `RespConnection` for reading and writing asynchronously.
@@ -37,9 +47,16 @@ pub type RespConnection = Framed<TcpStream, RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
+#[cfg(feature = "with_tokio")]
 pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect(addr).await?;
     Ok(RespCodec.framed(tcp_stream))
+}
+
+#[cfg(feature = "with_async_std")]
+pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
+    let tcp_stream = TcpStream::connect(addr).await?;
+    Ok(RespConnection::new(tcp_stream))
 }
 
 pub async fn connect_with_auth(
