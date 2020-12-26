@@ -17,10 +17,7 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{
-    future::TryFutureExt,
-    stream::{Fuse, Stream, StreamExt},
-};
+use futures_util::stream::{Fuse, Stream, StreamExt};
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -30,9 +27,10 @@ use super::{
 use crate::{
     error::{self, ConnectionReason},
     protocol::resp::{self, FromResp},
-    reconnect::{reconnect, Reconnect},
     task::spawn,
 };
+
+use super::reconnect::{Reconnectable, ReconnectableActions};
 
 #[derive(Debug)]
 enum PubsubEvent {
@@ -324,10 +322,58 @@ impl Future for PubsubConnectionInner {
     }
 }
 
+// PubsubEvent, mpsc::UnboundedSender<PubsubEvent>
+
+#[derive(Debug)]
+struct PubsubConnectionActions {
+    addr: SocketAddr,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
+}
+
+impl ReconnectableActions for PubsubConnectionActions {
+    type WorkPayload = PubsubEvent;
+    type ConnectionType = mpsc::UnboundedSender<PubsubEvent>;
+
+    fn do_work(
+        &self,
+        con: &Self::ConnectionType,
+        work: Self::WorkPayload,
+    ) -> Result<(), error::Error> {
+        con.unbounded_send(work).map_err(|e| e.into())
+    }
+
+    fn do_connection(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::ConnectionType, error::Error>> + Send>> {
+        let con_f = inner_conn_fn(self.addr, self.username.clone(), self.password.clone());
+        Box::pin(con_f)
+    }
+}
+
 /// A shareable reference to subscribe to PUBSUB topics
 #[derive(Debug, Clone)]
 pub struct PubsubConnection {
-    out_tx_c: Arc<Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>>,
+    out_tx_c: Arc<Reconnectable<PubsubConnectionActions>>,
+}
+
+impl PubsubConnection {
+    async fn init(
+        addr: SocketAddr,
+        username: Option<Arc<str>>,
+        password: Option<Arc<str>>,
+    ) -> Result<Self, error::Error> {
+        Ok(PubsubConnection {
+            out_tx_c: Arc::new(
+                Reconnectable::init(PubsubConnectionActions {
+                    addr,
+                    username,
+                    password,
+                })
+                .await?,
+            ),
+        })
+    }
 }
 
 async fn inner_conn_fn(
@@ -355,18 +401,7 @@ impl ConnectionBuilder {
         let username = self.username.clone();
         let password = self.password.clone();
 
-        let reconnecting_f = reconnect(
-            |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
-                con.unbounded_send(act).map_err(|e| e.into())
-            },
-            move || {
-                let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-                Box::pin(con_f)
-            },
-        );
-        reconnecting_f.map_ok(|con| PubsubConnection {
-            out_tx_c: Arc::new(con),
-        })
+        PubsubConnection::init(addr, username, password)
     }
 }
 
@@ -395,7 +430,8 @@ impl PubsubConnection {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
         self.out_tx_c
-            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))?;
+            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))
+            .await?;
 
         match signal_r.await {
             Ok(_) => Ok(PubsubStream {
@@ -411,7 +447,8 @@ impl PubsubConnection {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
         self.out_tx_c
-            .do_work(PubsubEvent::Psubscribe(topic.to_owned(), tx, signal_t))?;
+            .do_work(PubsubEvent::Psubscribe(topic.to_owned(), tx, signal_t))
+            .await?;
 
         match signal_r.await {
             Ok(_) => Ok(PubsubStream {

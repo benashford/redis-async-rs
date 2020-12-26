@@ -18,10 +18,7 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{
-    future::{self, TryFutureExt},
-    stream::StreamExt,
-};
+use futures_util::stream::StreamExt;
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -307,7 +304,7 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        self.out_tx_c.do_work((msg, tx)).await;
+        self.out_tx_c.do_work((msg, tx)).await?;
 
         match rx.await {
             Ok(v) => Ok(T::from_resp(v)?),

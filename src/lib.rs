@@ -73,6 +73,4 @@ pub mod protocol;
 pub mod client;
 pub mod error;
 
-#[deprecated]
-pub(crate) mod reconnect;
 mod task;

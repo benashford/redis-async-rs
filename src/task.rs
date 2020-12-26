@@ -9,7 +9,6 @@
  */
 
 use std::future::Future;
-use std::time::Duration;
 
 #[cfg(feature = "with_tokio")]
 pub(crate) fn spawn<F>(f: F)
@@ -23,26 +22,4 @@ where
 #[cfg(feature = "with_async_std")]
 pub(crate) fn spawn<F>(f: F) {
     async_global_executor::spawn(f).detach()
-}
-
-#[cfg(feature = "with_tokio")]
-pub(crate) fn timeout<T>(duration: Duration, future: T) -> impl Future<Output = Option<T::Output>>
-where
-    T: Future,
-{
-    let timeout = tokio::time::timeout(duration, future);
-    async {
-        match timeout.await {
-            Ok(t) => Some(t),
-            Err(_) => None,
-        }
-    }
-}
-
-#[cfg(feature = "with_async_std")]
-pub(crate) fn timeout<T>(duration: Duration, future: T) -> impl Future<Output = Option<T::Output>>
-where
-    T: Future,
-{
-    todo!()
 }
