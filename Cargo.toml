@@ -28,7 +28,7 @@ tokio-util_06 = { package = "tokio-util", version = "0.6", features = ["codec"],
 [dev-dependencies]
 env_logger = "^0.8.1"
 futures = "^0.3.7"
-async-std = "1.8"
+async-std = { version = "1.8", features = ["attributes"] }
 tokio_02 = { package = "tokio", version = "0.2", features = ["full"] }
 tokio_10 = { package = "tokio", version = "1.0", features = ["full"] }
 

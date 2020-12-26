@@ -18,7 +18,7 @@ use futures_util::stream::Stream;
 
 use crate::{error::Error, protocol::resp::RespValue};
 
-pub(crate) struct RespTcpStream {
+pub struct RespTcpStream {
     tcp_stream: TcpStream,
 }
 

@@ -20,6 +20,10 @@ where
 }
 
 #[cfg(feature = "with_async_std")]
-pub(crate) fn spawn<F>(f: F) {
+pub(crate) fn spawn<F>(f: F)
+where
+    F: Future + Send + 'static,
+    F::Output: Send,
+{
     async_global_executor::spawn(f).detach()
 }
