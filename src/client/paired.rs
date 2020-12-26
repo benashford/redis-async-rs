@@ -25,15 +25,11 @@ use futures_util::{
 
 use super::{
     connect::{connect_with_auth, RespConnection},
+    reconnect::{Reconnectable, ReconnectableActions},
     ConnectionBuilder,
 };
 
-use crate::{
-    error,
-    protocol::resp,
-    reconnect::{reconnect, Reconnect},
-    task::spawn,
-};
+use crate::{error, protocol::resp, task::spawn};
 
 /// The state of sending messages to a Redis server
 enum SendStatus {
@@ -194,10 +190,56 @@ impl Future for PairedConnectionInner {
     }
 }
 
+#[derive(Debug)]
+struct PairedConnectionActions {
+    addr: SocketAddr,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
+}
+
+impl ReconnectableActions for PairedConnectionActions {
+    type WorkPayload = SendPayload;
+    type ConnectionType = mpsc::UnboundedSender<SendPayload>;
+
+    fn do_work(
+        &self,
+        con: &Self::ConnectionType,
+        work: Self::WorkPayload,
+    ) -> Result<(), error::Error> {
+        con.unbounded_send(work).map_err(|e| e.into())
+    }
+
+    fn do_connection(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::ConnectionType, error::Error>> + Send>> {
+        let con_f = inner_conn_fn(self.addr, self.username.clone(), self.password.clone());
+        Box::pin(con_f)
+    }
+}
+
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Debug, Clone)]
 pub struct PairedConnection {
-    out_tx_c: Arc<Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>>,
+    out_tx_c: Arc<Reconnectable<PairedConnectionActions>>,
+}
+
+impl PairedConnection {
+    async fn init(
+        addr: SocketAddr,
+        username: Option<Arc<str>>,
+        password: Option<Arc<str>>,
+    ) -> Result<Self, error::Error> {
+        Ok(PairedConnection {
+            out_tx_c: Arc::new(
+                Reconnectable::init(PairedConnectionActions {
+                    addr,
+                    username,
+                    password,
+                })
+                .await?,
+            ),
+        })
+    }
 }
 
 async fn inner_conn_fn(
@@ -221,19 +263,7 @@ impl ConnectionBuilder {
         let username = self.username.clone();
         let password = self.password.clone();
 
-        let work_fn = |con: &mpsc::UnboundedSender<SendPayload>, act| {
-            con.unbounded_send(act).map_err(|e| e.into())
-        };
-
-        let conn_fn = move || {
-            let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-            Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
-        };
-
-        let reconnecting_con = reconnect(work_fn, conn_fn);
-        reconnecting_con.map_ok(|con| PairedConnection {
-            out_tx_c: Arc::new(con),
-        })
+        PairedConnection::init(addr, username, password)
     }
 }
 
@@ -265,37 +295,32 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Output = Result<T, error::Error>>
+    pub async fn send<T>(&self, msg: resp::RespValue) -> Result<T, error::Error>
     where
         T: resp::FromResp,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
             _ => {
-                return future::Either::Right(future::ready(Err(error::internal(
-                    "Command must be a RespValue::Array",
-                ))));
+                return Err(error::internal("Command must be a RespValue::Array"));
             }
         }
 
         let (tx, rx) = oneshot::channel();
-        match self.out_tx_c.do_work((msg, tx)) {
-            Ok(()) => future::Either::Left(async move {
-                match rx.await {
-                    Ok(v) => Ok(T::from_resp(v)?),
-                    Err(_) => Err(error::internal(
-                        "Connection closed before response received",
-                    )),
-                }
-            }),
-            Err(e) => future::Either::Right(future::ready(Err(e))),
+        self.out_tx_c.do_work((msg, tx)).await;
+
+        match rx.await {
+            Ok(v) => Ok(T::from_resp(v)?),
+            Err(_) => Err(error::internal(
+                "Connection closed before response received",
+            )),
         }
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
-        let send_f = self.send::<resp::RespValue>(msg);
-        let forget_f = async {
-            if let Err(e) = send_f.await {
+        let pc = self.clone();
+        let forget_f = async move {
+            if let Err(e) = pc.send::<resp::RespValue>(msg).await {
                 log::error!("Error in send_and_forget: {}", e);
             }
         };

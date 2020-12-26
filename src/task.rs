@@ -12,17 +12,17 @@ use std::future::Future;
 use std::time::Duration;
 
 #[cfg(feature = "with_tokio")]
-pub(crate) fn spawn<F>(f: F) -> tokio::task::JoinHandle<F::Output>
+pub(crate) fn spawn<F>(f: F)
 where
     F: Future + Send + 'static,
     F::Output: Send,
 {
-    tokio::spawn(f)
+    tokio::spawn(f);
 }
 
 #[cfg(feature = "with_async_std")]
-pub(crate) fn spawn<F>(f: F) -> () {
-    async_global_executor::spawn(f)
+pub(crate) fn spawn<F>(f: F) {
+    async_global_executor::spawn(f).detach()
 }
 
 #[cfg(feature = "with_tokio")]

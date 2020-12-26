@@ -51,6 +51,16 @@ pub enum Error {
     Unexpected(String),
 }
 
+impl Error {
+    pub(crate) fn is_io(&self) -> bool {
+        matches!(self, Error::IO(_))
+    }
+
+    pub(crate) fn is_unexpected(&self) -> bool {
+        matches!(self, Error::Unexpected(_))
+    }
+}
+
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
     Error::Internal(msg.into())
 }
@@ -66,6 +76,12 @@ pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
 impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
     fn from(err: mpsc::TrySendError<T>) -> Error {
         Error::Unexpected(format!("Cannot write to channel: {}", err))
+    }
+}
+
+impl From<lwactors::ActorError> for Error {
+    fn from(err: lwactors::ActorError) -> Error {
+        Error::Internal(format!("Actor error: {}", err))
     }
 }
 
