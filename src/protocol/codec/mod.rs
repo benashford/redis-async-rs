@@ -13,3 +13,9 @@ mod encode;
 
 #[cfg(feature = "tokio_codec")]
 pub(crate) mod tokio;
+
+#[cfg(feature = "with_async_std")]
+pub(crate) use encode::encode;
+
+#[cfg(feature = "with_async_std")]
+pub(crate) use decode::decode;

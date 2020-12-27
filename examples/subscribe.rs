@@ -20,8 +20,19 @@ use futures::StreamExt;
 
 use redis_async::{client, protocol::FromResp};
 
+#[cfg(feature = "with_tokio")]
 #[tokio::main]
 async fn main() {
+    do_main().await;
+}
+
+#[cfg(feature = "with_async_std")]
+#[async_std::main]
+async fn main() {
+    do_main().await;
+}
+
+async fn do_main() {
     env_logger::init();
     let topic = env::args()
         .nth(1)

@@ -11,7 +11,7 @@
 #[macro_use]
 pub(crate) mod resp;
 
-mod codec;
+pub(crate) mod codec;
 
 #[cfg(feature = "tokio_codec")]
 pub(crate) use codec::tokio::RespCodec;

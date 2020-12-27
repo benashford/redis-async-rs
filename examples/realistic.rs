@@ -22,9 +22,19 @@ use futures_util::future;
 
 use redis_async::{client, resp_array};
 
-/// An artificial "realistic" non-trivial example to demonstrate usage
+#[cfg(feature = "with_tokio")]
 #[tokio::main]
 async fn main() {
+    do_main().await;
+}
+
+#[cfg(feature = "with_async_std")]
+#[async_std::main]
+async fn main() {
+    do_main().await;
+}
+
+async fn do_main() {
     // Create some completely arbitrary "test data"
     let test_data_size = 10;
     let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
