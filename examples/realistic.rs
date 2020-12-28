@@ -34,6 +34,7 @@ async fn main() {
     do_main().await;
 }
 
+/// An artificial "realistic" non-trivial example to demonstrate usage
 async fn do_main() {
     // Create some completely arbitrary "test data"
     let test_data_size = 10;
