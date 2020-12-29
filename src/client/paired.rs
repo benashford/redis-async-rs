@@ -18,11 +18,14 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::stream::StreamExt;
+use futures_util::{
+    future::{self, Either},
+    stream::StreamExt,
+};
 
 use super::{
     connect::{connect_with_auth, RespConnection},
-    reconnect::{Reconnectable, ReconnectableActions},
+    reconnect::{ActionWork, Reconnectable, ReconnectableActions},
     ConnectionBuilder,
 };
 
@@ -188,6 +191,24 @@ impl Future for PairedConnectionInner {
 }
 
 #[derive(Debug)]
+struct PairedConnectionWork {
+    payload: SendPayload,
+}
+
+impl ActionWork for PairedConnectionWork {
+    type WorkPayload = SendPayload;
+    type ConnectionType = mpsc::UnboundedSender<SendPayload>;
+
+    fn init(payload: Self::WorkPayload) -> Self {
+        PairedConnectionWork { payload }
+    }
+
+    fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error> {
+        con.unbounded_send(self.payload).map_err(|e| e.into())
+    }
+}
+
+#[derive(Debug)]
 struct PairedConnectionActions {
     addr: SocketAddr,
     username: Option<Arc<str>>,
@@ -196,15 +217,8 @@ struct PairedConnectionActions {
 
 impl ReconnectableActions for PairedConnectionActions {
     type WorkPayload = SendPayload;
+    type WorkFn = PairedConnectionWork;
     type ConnectionType = mpsc::UnboundedSender<SendPayload>;
-
-    fn do_work(
-        &self,
-        con: &Self::ConnectionType,
-        work: Self::WorkPayload,
-    ) -> Result<(), error::Error> {
-        con.unbounded_send(work).map_err(|e| e.into())
-    }
 
     fn do_connection(
         &self,
@@ -292,36 +306,38 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub async fn send<T>(&self, msg: resp::RespValue) -> Result<T, error::Error>
+    pub fn send<'a, T>(
+        &'a self,
+        msg: resp::RespValue,
+    ) -> impl Future<Output = Result<T, error::Error>> + 'a
     where
-        T: resp::FromResp,
+        T: resp::FromResp + 'a,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
             _ => {
-                return Err(error::internal("Command must be a RespValue::Array"));
+                return Either::Left(future::err(error::internal(
+                    "Command must be a RespValue::Array",
+                )));
             }
         }
 
         let (tx, rx) = oneshot::channel();
-        self.out_tx_c.do_work((msg, tx)).await?;
+        let work_f = self.out_tx_c.do_work((msg, tx));
 
-        match rx.await {
-            Ok(v) => Ok(T::from_resp(v)?),
-            Err(_) => Err(error::internal(
-                "Connection closed before response received",
-            )),
-        }
+        Either::Right(async {
+            let _ = work_f.await?;
+            match rx.await {
+                Ok(v) => Ok(T::from_resp(v)?),
+                Err(_) => Err(error::internal(
+                    "Connection closed before response received",
+                )),
+            }
+        })
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
-        let pc = self.clone();
-        let forget_f = async move {
-            if let Err(e) = pc.send::<resp::RespValue>(msg).await {
-                log::error!("Error in send_and_forget: {}", e);
-            }
-        };
-        spawn(forget_f);
+        let _ = self.send::<resp::RespValue>(msg);
     }
 }
 

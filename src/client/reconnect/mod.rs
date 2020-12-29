@@ -14,17 +14,21 @@ use std::{future::Future, pin::Pin};
 
 use crate::{error, task::spawn};
 
-use holder::{ConnectionHolder, GetConnectionState};
+use holder::ConnectionHolder;
+
+pub(crate) trait ActionWork {
+    type WorkPayload;
+    type ConnectionType;
+
+    fn init(payload: Self::WorkPayload) -> Self;
+
+    fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error>;
+}
 
 pub(crate) trait ReconnectableActions {
     type WorkPayload;
+    type WorkFn: ActionWork<WorkPayload = Self::WorkPayload, ConnectionType = Self::ConnectionType>;
     type ConnectionType: Send + Sync + 'static;
-
-    fn do_work(
-        &self,
-        con: &Self::ConnectionType,
-        work: Self::WorkPayload,
-    ) -> Result<(), error::Error>;
 
     fn do_connection(
         &self,
@@ -36,13 +40,14 @@ pub(crate) struct Reconnectable<A>
 where
     A: ReconnectableActions,
 {
-    con: ConnectionHolder<A::ConnectionType>,
+    con: ConnectionHolder<A::ConnectionType, A::WorkFn>,
     actions: A,
 }
 
 impl<A> Reconnectable<A>
 where
     A: ReconnectableActions,
+    A::WorkFn: Send + 'static,
 {
     pub(crate) async fn init(actions: A) -> Result<Self, error::Error> {
         let t = actions.do_connection().await?;
@@ -52,27 +57,21 @@ where
         })
     }
 
-    pub(crate) async fn do_work(&self, work: A::WorkPayload) -> Result<(), error::Error> {
-        let connection_state = self.con.get_connection().await?;
-        match connection_state {
-            GetConnectionState::NotConnected => {
+    pub(crate) fn do_work(
+        &self,
+        work: A::WorkPayload,
+    ) -> impl Future<Output = Result<(), error::Error>> + '_ {
+        let work_f = self.con.do_work(A::WorkFn::init(work));
+
+        async move {
+            if work_f.await? {
+                Ok(())
+            } else {
                 self.reconnect();
                 Err(error::Error::Connection(
                     error::ConnectionReason::NotConnected,
                 ))
             }
-            GetConnectionState::Connected(con) => match self.actions.do_work(&con, work) {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    if e.is_io() || e.is_unexpected() {
-                        self.con.connection_dropped().await?;
-                    }
-                    Err(e)
-                }
-            },
-            GetConnectionState::Connecting => Err(error::Error::Connection(
-                error::ConnectionReason::Connecting,
-            )),
         }
     }
 

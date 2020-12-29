@@ -30,7 +30,7 @@ use crate::{
     task::spawn,
 };
 
-use super::reconnect::{Reconnectable, ReconnectableActions};
+use super::reconnect::{ActionWork, Reconnectable, ReconnectableActions};
 
 #[derive(Debug)]
 enum PubsubEvent {
@@ -322,6 +322,24 @@ impl Future for PubsubConnectionInner {
     }
 }
 
+#[derive(Debug)]
+struct PubsubWork {
+    payload: PubsubEvent,
+}
+
+impl ActionWork for PubsubWork {
+    type WorkPayload = PubsubEvent;
+    type ConnectionType = mpsc::UnboundedSender<PubsubEvent>;
+
+    fn init(payload: Self::WorkPayload) -> Self {
+        PubsubWork { payload }
+    }
+
+    fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error> {
+        con.unbounded_send(self.payload).map_err(|e| e.into())
+    }
+}
+
 // PubsubEvent, mpsc::UnboundedSender<PubsubEvent>
 
 #[derive(Debug)]
@@ -333,15 +351,8 @@ struct PubsubConnectionActions {
 
 impl ReconnectableActions for PubsubConnectionActions {
     type WorkPayload = PubsubEvent;
+    type WorkFn = PubsubWork;
     type ConnectionType = mpsc::UnboundedSender<PubsubEvent>;
-
-    fn do_work(
-        &self,
-        con: &Self::ConnectionType,
-        work: Self::WorkPayload,
-    ) -> Result<(), error::Error> {
-        con.unbounded_send(work).map_err(|e| e.into())
-    }
 
     fn do_connection(
         &self,

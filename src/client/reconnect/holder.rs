@@ -9,25 +9,31 @@
  */
 
 use std::{
-    sync::Arc,
+    future::Future,
     time::{Duration, Instant},
 };
+
+use futures_util::{future, TryFutureExt};
 
 use lwactors::{actor, Action, ActorSender};
 
 use crate::error;
 
+use super::ActionWork;
+
 #[derive(Debug)]
-pub(crate) struct ConnectionHolder<T>
-where
-    T: Send,
-{
-    queue: ActorSender<ConnectionHolderAction<T>, ConnectionHolderResult<T>, error::Error>,
+pub(crate) struct ConnectionHolder<T, F> {
+    queue: ActorSender<
+        ConnectionHolderAction<T, F>,
+        ConnectionHolderResult<error::Error>,
+        error::Error,
+    >,
 }
 
-impl<T> ConnectionHolder<T>
+impl<T, F> ConnectionHolder<T, F>
 where
     T: Send + Sync + 'static,
+    F: ActionWork<ConnectionType = T> + Send + 'static,
 {
     pub(crate) fn new(t: T) -> Self {
         ConnectionHolder {
@@ -35,15 +41,18 @@ where
         }
     }
 
-    pub(crate) async fn get_connection(&self) -> Result<GetConnectionState<T>, error::Error> {
-        match self
-            .queue
-            .invoke(ConnectionHolderAction::GetConnection)
-            .await?
-        {
-            ConnectionHolderResult::GetConnection(get_connection_state) => Ok(get_connection_state),
-            _ => panic!("Wrong response"),
-        }
+    pub(crate) fn do_work(&self, f: F) -> impl Future<Output = Result<bool, error::Error>> {
+        self.queue
+            .invoke(ConnectionHolderAction::DoWork(f))
+            .and_then(|result| match result {
+                ConnectionHolderResult::DoWork(DoWorkState::Connecting) => future::err(
+                    error::Error::Connection(error::ConnectionReason::Connecting),
+                ),
+                ConnectionHolderResult::DoWork(DoWorkState::NotConnected) => future::ok(false),
+                ConnectionHolderResult::DoWork(DoWorkState::ConnectedErr(e)) => future::err(e),
+                ConnectionHolderResult::DoWork(DoWorkState::ConnectedOk(())) => future::ok(true),
+                _ => panic!("Not a DoWork result"),
+            })
     }
 
     pub(crate) async fn set_connection(&self, con: T) -> Result<(), error::Error> {
@@ -56,20 +65,9 @@ where
             _ => panic!("Wrong response"),
         }
     }
-
-    pub(crate) async fn connection_dropped(&self) -> Result<(), error::Error> {
-        match self
-            .queue
-            .invoke(ConnectionHolderAction::ConnectionDropped)
-            .await?
-        {
-            ConnectionHolderResult::ConnectionDropped => Ok(()),
-            _ => panic!("Wrong response"),
-        }
-    }
 }
 
-impl<T> Clone for ConnectionHolder<T>
+impl<T, F> Clone for ConnectionHolder<T, F>
 where
     T: Send,
 {
@@ -83,66 +81,58 @@ where
 const MAX_CONNECTION_DUR: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
-enum ConnectionHolderAction<T> {
-    GetConnection,
+enum ConnectionHolderAction<T, F> {
+    DoWork(F),
     SetConnection(T),
-    ConnectionDropped,
 }
 
-impl<T> Action for ConnectionHolderAction<T> {
+impl<T, F> Action for ConnectionHolderAction<T, F>
+where
+    T: Send,
+    F: ActionWork<ConnectionType = T>,
+{
     type State = ConnectionHolderState<T>;
-    type Result = ConnectionHolderResult<T>;
+    type Result = ConnectionHolderResult<error::Error>;
     type Error = error::Error;
 
     fn act(self, state: &mut Self::State) -> Result<Self::Result, Self::Error> {
         let res = match self {
-            ConnectionHolderAction::GetConnection => {
-                let gcs = match state {
-                    ConnectionHolderState::NotConnected => {
-                        *state = ConnectionHolderState::Connecting(Instant::now());
-                        GetConnectionState::NotConnected
-                    }
-                    ConnectionHolderState::Connected(ref con) => {
-                        GetConnectionState::Connected(con.clone())
-                    }
+            ConnectionHolderAction::DoWork(work_f) => {
+                let dws: DoWorkState<Self::Error> = match state {
+                    ConnectionHolderState::Connected(ref con) => match work_f.call(con) {
+                        Ok(()) => DoWorkState::ConnectedOk(()),
+                        Err(e) => {
+                            if e.is_io() || e.is_unexpected() {
+                                *state = ConnectionHolderState::Connecting(Instant::now());
+                                DoWorkState::NotConnected
+                            } else {
+                                DoWorkState::ConnectedErr(e)
+                            }
+                        }
+                    },
                     ConnectionHolderState::Connecting(ref mut inst) => {
                         let now = Instant::now();
                         let dur = now - *inst;
                         if dur > MAX_CONNECTION_DUR {
                             *inst = now;
-                            GetConnectionState::NotConnected
+                            DoWorkState::NotConnected
                         } else {
-                            GetConnectionState::Connecting
+                            DoWorkState::Connecting
                         }
                     }
                 };
-                ConnectionHolderResult::GetConnection(gcs)
+                ConnectionHolderResult::DoWork(dws)
             }
             ConnectionHolderAction::SetConnection(con) => {
                 match state {
-                    ConnectionHolderState::NotConnected => {
-                        log::warn!("Cannot set state when in NotConnected state");
-                    }
                     ConnectionHolderState::Connected(_) => {
                         log::warn!("Cannot set state when in Connected state");
                     }
                     ConnectionHolderState::Connecting(_) => {
-                        *state = ConnectionHolderState::Connected(Arc::new(con))
+                        *state = ConnectionHolderState::Connected(con)
                     }
                 }
                 ConnectionHolderResult::SetConnection
-            }
-            ConnectionHolderAction::ConnectionDropped => {
-                match state {
-                    ConnectionHolderState::NotConnected => (),
-                    ConnectionHolderState::Connected(_) => {
-                        *state = ConnectionHolderState::NotConnected
-                    }
-                    ConnectionHolderState::Connecting(_) => {
-                        log::warn!("Connection already re-connecting...")
-                    }
-                }
-                ConnectionHolderResult::ConnectionDropped
             }
         };
 
@@ -151,28 +141,33 @@ impl<T> Action for ConnectionHolderAction<T> {
 }
 
 #[derive(Debug)]
-enum ConnectionHolderState<T> {
-    NotConnected,
+enum ConnectionHolderState<T>
+where
+    T: Send,
+{
     Connecting(Instant),
-    Connected(Arc<T>),
+    Connected(T),
 }
 
-impl<T> ConnectionHolderState<T> {
+impl<T> ConnectionHolderState<T>
+where
+    T: Send + 'static,
+{
     fn new(t: T) -> Self {
-        ConnectionHolderState::Connected(Arc::new(t))
+        ConnectionHolderState::Connected(t)
     }
 }
 
 #[derive(Debug)]
-pub(crate) enum ConnectionHolderResult<T> {
-    GetConnection(GetConnectionState<T>),
+pub(crate) enum ConnectionHolderResult<E> {
+    DoWork(DoWorkState<E>),
     SetConnection,
-    ConnectionDropped,
 }
 
 #[derive(Debug)]
-pub(crate) enum GetConnectionState<T> {
+pub(crate) enum DoWorkState<E> {
     NotConnected,
     Connecting,
-    Connected(Arc<T>),
+    ConnectedOk(()),
+    ConnectedErr(E),
 }
