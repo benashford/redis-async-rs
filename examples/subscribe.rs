@@ -16,6 +16,7 @@ extern crate tokio_10 as tokio;
 
 use std::env;
 
+use client::ConnectionBuilder;
 use futures::StreamExt;
 
 use redis_async::{client, protocol::FromResp};
@@ -39,13 +40,14 @@ async fn do_main() {
         .unwrap_or_else(|| "test-topic".to_string());
     let addr = env::args()
         .nth(2)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
 
-    let pubsub_con = client::pubsub_connect(addr)
+    let pubsub_con = ConnectionBuilder::new(addr)
+        .expect("Cannot parse address")
+        .pubsub_connect()
         .await
-        .expect("Cannot connect to Redis");
+        .expect("Cannot open connection");
+
     let mut msgs = pubsub_con
         .subscribe(&topic)
         .await

@@ -278,21 +278,6 @@ impl ConnectionBuilder {
     }
 }
 
-/// The default starting point to use most default Redis functionality.
-///
-/// Returns a future that resolves to a `PairedConnection`. The future will complete when the
-/// initial connection is established.
-///
-/// Once the initial connection is established, the connection will attempt to reconnect should
-/// the connection be broken (e.g. the Redis server being restarted), but reconnections occur
-/// asynchronously, so all commands issued while the connection is unavailable will error, it is
-/// the client's responsibility to retry commands as applicable. Also, at least one command needs
-/// to be tried against the connection to trigger the re-connection attempt; this means at least
-/// one command will definitely fail in a disconnect/reconnect scenario.
-pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.paired_connect().await
-}
-
 impl PairedConnection {
     /// Sends a command to Redis.
     ///
@@ -347,9 +332,9 @@ mod test {
 
     #[tokio::test]
     async fn can_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
             .expect("Cannot establish connection");
 
@@ -366,9 +351,9 @@ mod test {
 
     #[tokio::test]
     async fn complex_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
             .expect("Cannot establish connection");
 
@@ -386,11 +371,12 @@ mod test {
 
     #[tokio::test]
     async fn sending_a_lot_of_data_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
-            .expect("Cannot connect to Redis");
+            .expect("Cannot establish connection");
+
         let mut futures = Vec::with_capacity(1000);
         for i in 0..1000 {
             let key = format!("X_{}", i);

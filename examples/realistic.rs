@@ -20,7 +20,7 @@ use futures_util::future;
 
 // use futures::{future, Future};
 
-use redis_async::{client, resp_array};
+use redis_async::{client::ConnectionBuilder, resp_array};
 
 #[cfg(feature = "with_tokio")]
 #[tokio::main]
@@ -42,11 +42,12 @@ async fn do_main() {
 
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
 
-    let connection = client::paired_connect(addr)
+    let connection_builder = ConnectionBuilder::new(addr).expect("Cannot parse address");
+
+    let connection = connection_builder
+        .paired_connect()
         .await
         .expect("Cannot open connection");
 

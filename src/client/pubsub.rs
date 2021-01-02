@@ -407,6 +407,12 @@ async fn inner_conn_fn(
 }
 
 impl ConnectionBuilder {
+    /// Used for Redis's PUBSUB functionality.
+    ///
+    /// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
+    /// connection is established; after the intial establishment, if the connection drops for any
+    /// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
+    /// any subscriptions will need to be re-subscribed.
     pub fn pubsub_connect(&self) -> impl Future<Output = Result<PubsubConnection, error::Error>> {
         let addr = self.addr;
         let username = self.username.clone();
@@ -414,16 +420,6 @@ impl ConnectionBuilder {
 
         PubsubConnection::init(addr, username, password)
     }
-}
-
-/// Used for Redis's PUBSUB functionality.
-///
-/// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
-/// connection is established; after the intial establishment, if the connection drops for any
-/// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
-/// any subscriptions will need to be re-subscribed.
-pub async fn pubsub_connect(addr: SocketAddr) -> Result<PubsubConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.pubsub_connect().await
 }
 
 impl PubsubConnection {
@@ -515,13 +511,18 @@ impl Drop for PubsubStream {
 mod test {
     use futures::{try_join, StreamExt, TryStreamExt};
 
-    use crate::{client, protocol::resp};
+    use super::ConnectionBuilder;
+
+    use crate::protocol::resp;
 
     #[tokio::test]
     async fn subscribe_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-        let paired_c = client::paired_connect(addr);
-        let pubsub_c = super::pubsub_connect(addr);
+        let connection_builder =
+            ConnectionBuilder::new("127.0.0.1:6379").expect("Cannot build builder");
+
+        let paired_c = connection_builder.paired_connect();
+        let pubsub_c = connection_builder.pubsub_connect();
+
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub
@@ -549,9 +550,12 @@ mod test {
 
     #[tokio::test]
     async fn psubscribe_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-        let paired_c = client::paired_connect(addr);
-        let pubsub_c = super::pubsub_connect(addr);
+        let connection_builder =
+            ConnectionBuilder::new("127.0.0.1:6379").expect("Cannot build builder");
+
+        let paired_c = connection_builder.paired_connect();
+        let pubsub_c = connection_builder.pubsub_connect();
+
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub

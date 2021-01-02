@@ -18,7 +18,7 @@ use std::env;
 
 use futures::StreamExt;
 
-use redis_async::{client, protocol::FromResp};
+use redis_async::{client::ConnectionBuilder, protocol::FromResp};
 
 #[cfg(feature = "with_tokio")]
 #[tokio::main]
@@ -35,15 +35,17 @@ async fn main() {
 async fn do_main() {
     env_logger::init();
     let topic = env::args().nth(1).unwrap_or_else(|| "test.*".to_string());
+
     let addr = env::args()
         .nth(2)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
 
-    let pubsub_con = client::pubsub_connect(addr)
+    let pubsub_con = ConnectionBuilder::new(addr)
+        .expect("Cannot parse address")
+        .pubsub_connect()
         .await
-        .expect("Cannot connect to Redis");
+        .expect("Cannot open connection");
+
     let mut msgs = pubsub_con
         .psubscribe(&topic)
         .await

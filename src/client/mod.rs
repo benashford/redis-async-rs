@@ -27,8 +27,6 @@ pub(crate) mod pubsub;
 mod reconnect;
 
 pub use self::{
-    builder::ConnectionBuilder,
-    connect::connect,
-    paired::{paired_connect, PairedConnection},
-    pubsub::{pubsub_connect, PubsubConnection},
+    builder::ConnectionBuilder, connect::connect, paired::PairedConnection,
+    pubsub::PubsubConnection,
 };
