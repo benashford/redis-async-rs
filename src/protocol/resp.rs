@@ -104,7 +104,6 @@ impl FromResp for String {
     fn from_resp_int(resp: RespValue) -> Result<String, Error> {
         match resp {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
-            RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
             _ => Err(error::resp("Cannot convert into a string", resp)),
         }

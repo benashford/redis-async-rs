@@ -43,33 +43,45 @@ fn write_header(symb: u8, len: i64, buf: &mut BytesMut) {
     write_rn(buf);
 }
 
+fn encode_nil(buf: &mut BytesMut) {
+    write_header(b'$', -1, buf);
+}
+
+fn encode_array(ary: Vec<RespValue>, buf: &mut BytesMut) {
+    write_header(b'*', ary.len() as i64, buf);
+    for v in ary {
+        encode(v, buf);
+    }
+}
+
+fn encode_bulkstring(bstr: Vec<u8>, buf: &mut BytesMut) {
+    let len = bstr.len();
+    write_header(b'$', len as i64, buf);
+    check_and_reserve(buf, len + 2);
+    buf.extend(bstr);
+    write_rn(buf);
+}
+
+fn encode_error(err: &str, buf: &mut BytesMut) {
+    write_simple_string(b'-', err, buf);
+}
+
+fn encode_integer(val: i64, buf: &mut BytesMut) {
+    // Simple integer are just the header
+    write_header(b':', val, buf);
+}
+
+fn encode_simple_string(string: &str, buf: &mut BytesMut) {
+    write_simple_string(b'+', string, buf);
+}
+
 pub(crate) fn encode(msg: RespValue, buf: &mut BytesMut) {
     match msg {
-        RespValue::Nil => {
-            write_header(b'$', -1, buf);
-        }
-        RespValue::Array(ary) => {
-            write_header(b'*', ary.len() as i64, buf);
-            for v in ary {
-                encode(v, buf);
-            }
-        }
-        RespValue::BulkString(bstr) => {
-            let len = bstr.len();
-            write_header(b'$', len as i64, buf);
-            check_and_reserve(buf, len + 2);
-            buf.extend(bstr);
-            write_rn(buf);
-        }
-        RespValue::Error(ref string) => {
-            write_simple_string(b'-', string, buf);
-        }
-        RespValue::Integer(val) => {
-            // Simple integer are just the header
-            write_header(b':', val, buf);
-        }
-        RespValue::SimpleString(ref string) => {
-            write_simple_string(b'+', string, buf);
-        }
+        RespValue::Nil => encode_nil(buf),
+        RespValue::Array(ary) => encode_array(ary, buf),
+        RespValue::BulkString(bstr) => encode_bulkstring(bstr, buf),
+        RespValue::Error(ref string) => encode_error(string, buf),
+        RespValue::Integer(val) => encode_integer(val, buf),
+        RespValue::SimpleString(ref string) => encode_simple_string(string, buf),
     }
 }

@@ -357,12 +357,12 @@ mod test {
             .await
             .expect("Cannot establish connection");
 
-        let value: String = connection
+        let value: u64 = connection
             .send(resp_array!["INCR", "CTR"])
             .await
             .expect("Cannot increment counter");
         let result: String = connection
-            .send(resp_array!["SET", "LASTCTR", value])
+            .send(resp_array!["SET", "LASTCTR", value.to_string()])
             .await
             .expect("Cannot set value");
 
