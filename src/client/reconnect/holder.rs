@@ -21,6 +21,7 @@ use crate::error;
 
 use super::ActionWork;
 
+/// A standalone actor which holds a Redis connection
 #[derive(Debug)]
 pub(crate) struct ConnectionHolder<T, F> {
     queue: ActorSender<
@@ -41,6 +42,11 @@ where
         }
     }
 
+    /// Perform a chunk of work on the available connection, if available.
+    ///
+    /// Returns a boolean. True means the work was done. False means the work was not done, and the
+    /// caller must attempt a reconnection. Any other failure will return an error, the caller
+    /// should not attempt a reconnection.
     pub(crate) fn do_work(&self, f: F) -> impl Future<Output = Result<bool, error::Error>> {
         self.queue
             .invoke(ConnectionHolderAction::DoWork(f))
@@ -55,6 +61,7 @@ where
             })
     }
 
+    /// Set a new connection if previously advised to attempt re-connection.
     pub(crate) async fn set_connection(&self, con: T) -> Result<(), error::Error> {
         match self
             .queue
@@ -62,6 +69,17 @@ where
             .await?
         {
             ConnectionHolderResult::SetConnection => Ok(()),
+            _ => panic!("Wrong response"),
+        }
+    }
+
+    pub(crate) async fn set_connection_failed(&self) -> Result<(), error::Error> {
+        match self
+            .queue
+            .invoke(ConnectionHolderAction::SetConnectionFailed)
+            .await?
+        {
+            ConnectionHolderResult::SetConnectionFailed => Ok(()),
             _ => panic!("Wrong response"),
         }
     }
@@ -78,12 +96,14 @@ where
     }
 }
 
+// TODO - should probably be configurable...
 const MAX_CONNECTION_DUR: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 enum ConnectionHolderAction<T, F> {
     DoWork(F),
     SetConnection(T),
+    SetConnectionFailed,
 }
 
 impl<T, F> Action for ConnectionHolderAction<T, F>
@@ -110,6 +130,10 @@ where
                             }
                         }
                     },
+                    ConnectionHolderState::NotConnected => {
+                        *state = ConnectionHolderState::Connecting(Instant::now());
+                        DoWorkState::NotConnected
+                    }
                     ConnectionHolderState::Connecting(ref mut inst) => {
                         let now = Instant::now();
                         let dur = now - *inst;
@@ -131,8 +155,26 @@ where
                     ConnectionHolderState::Connecting(_) => {
                         *state = ConnectionHolderState::Connected(con)
                     }
+                    ConnectionHolderState::NotConnected => {
+                        log::warn!("This is a valid, but rare sequence of events");
+                        *state = ConnectionHolderState::Connected(con)
+                    }
                 }
                 ConnectionHolderResult::SetConnection
+            }
+            ConnectionHolderAction::SetConnectionFailed => {
+                match state {
+                    ConnectionHolderState::Connected(_) => {
+                        log::warn!("Cannot set state when in Connected state");
+                    }
+                    ConnectionHolderState::Connecting(_) => {
+                        *state = ConnectionHolderState::NotConnected
+                    }
+                    ConnectionHolderState::NotConnected => {
+                        log::warn!("Suspicious series of events...");
+                    }
+                }
+                ConnectionHolderResult::SetConnectionFailed
             }
         };
 
@@ -147,6 +189,7 @@ where
 {
     Connecting(Instant),
     Connected(T),
+    NotConnected,
 }
 
 impl<T> ConnectionHolderState<T>
@@ -162,6 +205,7 @@ where
 pub(crate) enum ConnectionHolderResult<E> {
     DoWork(DoWorkState<E>),
     SetConnection,
+    SetConnectionFailed,
 }
 
 #[derive(Debug)]

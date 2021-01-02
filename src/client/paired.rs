@@ -56,8 +56,8 @@ enum ReceiveStatus {
 type Responder = oneshot::Sender<resp::RespValue>;
 type SendPayload = (resp::RespValue, Responder);
 
-// /// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
-// /// results onto a `RespConnection` that is otherwise unpaired
+/// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
+/// results onto a `RespConnection` that is otherwise unpaired
 struct PairedConnectionInner {
     /// The underlying connection that talks the RESP protocol
     connection: RespConnection,

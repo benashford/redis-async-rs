@@ -16,6 +16,7 @@ use crate::{error, task::spawn};
 
 use holder::ConnectionHolder;
 
+/// A trait to be implemented by the chunks of work that are sent to a Redis connection
 pub(crate) trait ActionWork {
     type WorkPayload;
     type ConnectionType;
@@ -25,6 +26,7 @@ pub(crate) trait ActionWork {
     fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error>;
 }
 
+/// A trait to be implemented to allow a connection to be re-established should it be lost
 pub(crate) trait ReconnectableActions {
     type WorkPayload;
     type WorkFn: ActionWork<WorkPayload = Self::WorkPayload, ConnectionType = Self::ConnectionType>;
@@ -35,6 +37,8 @@ pub(crate) trait ReconnectableActions {
     ) -> Pin<Box<dyn Future<Output = Result<Self::ConnectionType, error::Error>> + Send>>;
 }
 
+/// A wrapper around a Redis connection that will automatically try and re-connect should the
+/// connection be lost
 #[derive(Debug)]
 pub(crate) struct Reconnectable<A>
 where
@@ -84,7 +88,13 @@ where
                     Ok(()) => (),
                     Err(e) => log::warn!("Couldn't set new connection: {}", e),
                 },
-                Err(e) => log::error!("Could not open connection: {}", e),
+                Err(e) => {
+                    log::error!("Could not open connection: {}", e);
+                    match con.set_connection_failed().await {
+                        Ok(()) => (),
+                        Err(e) => log::warn!("Couldn't set connection failure: {}", e),
+                    }
+                }
             }
         })
     }

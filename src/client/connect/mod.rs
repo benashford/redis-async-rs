@@ -59,6 +59,7 @@ pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> 
     Ok(RespConnection::new(tcp_stream))
 }
 
+/// Connect with optional authentication
 pub async fn connect_with_auth(
     addr: &SocketAddr,
     username: Option<&str>,

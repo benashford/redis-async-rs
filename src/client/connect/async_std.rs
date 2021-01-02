@@ -8,6 +8,9 @@
  * except according to those terms.
  */
 
+//! Experimental support for a non-Tokio runtime. This hasn't been tested as much as Tokio, so
+//! should be considered an unstable feature for the time being.
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
