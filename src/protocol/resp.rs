@@ -407,12 +407,28 @@ macro_rules! integer_into_resp {
     };
 }
 
-impl ToRespInteger for usize {
+impl ToRespInteger for i64 {
     fn to_resp_integer(self) -> RespValue {
-        RespValue::Integer(self as i64)
+        RespValue::Integer(self)
     }
 }
-integer_into_resp!(usize);
+integer_into_resp!(i64);
+
+macro_rules! impl_toresp_integers {
+    ($($int_ty:ident),* $(,)*) => {
+        $(
+            impl ToRespInteger for $int_ty {
+                fn to_resp_integer(self) -> RespValue {
+                    let new_self = self as i64;
+                    new_self.to_resp_integer()
+                }
+            }
+            integer_into_resp!($int_ty);
+        )*
+    };
+}
+
+impl_toresp_integers!(isize, i32, u32);
 
 #[cfg(test)]
 mod tests {

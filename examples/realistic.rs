@@ -55,7 +55,7 @@ async fn do_main() {
         let connection_inner = connection.clone();
         let incr_f = connection.send(resp_array!["INCR", "realistic_test_ctr"]);
         async move {
-            let ctr: String = incr_f.await.expect("Cannot increment");
+            let ctr: i64 = incr_f.await.expect("Cannot increment");
 
             let key = format!("rt_{}", ctr);
             let d_val = data.0.to_string();

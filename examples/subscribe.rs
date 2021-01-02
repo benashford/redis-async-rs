@@ -38,6 +38,7 @@ async fn do_main() {
     let topic = env::args()
         .nth(1)
         .unwrap_or_else(|| "test-topic".to_string());
+
     let addr = env::args()
         .nth(2)
         .unwrap_or_else(|| "127.0.0.1:6379".to_string());
