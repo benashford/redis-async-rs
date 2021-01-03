@@ -12,15 +12,10 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
-use std::io;
 use std::str;
 use std::sync::Arc;
 
-use bytes::{Buf, BufMut, BytesMut};
-
-use tokio_util::codec::{Decoder, Encoder};
-
-use super::error::{self, Error};
+use crate::error::{self, Error};
 
 /// A single RESP value, this owns the data that is read/to-be written to Redis.
 ///
@@ -109,7 +104,6 @@ impl FromResp for String {
     fn from_resp_int(resp: RespValue) -> Result<String, Error> {
         match resp {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
-            RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
             _ => Err(error::resp("Cannot convert into a string", resp)),
         }
@@ -331,7 +325,7 @@ where
 macro_rules! resp_array {
     ($($e:expr),* $(,)?) => {
         {
-            $crate::resp::RespValue::Array(vec![
+            $crate::protocol::RespValue::Array(vec![
                 $(
                     $e.into(),
                 )*
@@ -413,341 +407,36 @@ macro_rules! integer_into_resp {
     };
 }
 
-impl ToRespInteger for usize {
+impl ToRespInteger for i64 {
     fn to_resp_integer(self) -> RespValue {
-        RespValue::Integer(self as i64)
+        RespValue::Integer(self)
     }
 }
-integer_into_resp!(usize);
+integer_into_resp!(i64);
 
-/// Codec to read frames
-pub struct RespCodec;
-
-fn write_rn(buf: &mut BytesMut) {
-    buf.put_u8(b'\r');
-    buf.put_u8(b'\n');
-}
-
-fn check_and_reserve(buf: &mut BytesMut, amt: usize) {
-    let remaining_bytes = buf.remaining_mut();
-    if remaining_bytes < amt {
-        buf.reserve(amt);
-    }
-}
-
-fn write_header(symb: u8, len: i64, buf: &mut BytesMut) {
-    let len_as_string = len.to_string();
-    let len_as_bytes = len_as_string.as_bytes();
-    let header_bytes = 1 + len_as_bytes.len() + 2;
-    check_and_reserve(buf, header_bytes);
-    buf.put_u8(symb);
-    buf.extend(len_as_bytes);
-    write_rn(buf);
-}
-
-fn write_simple_string(symb: u8, string: &str, buf: &mut BytesMut) {
-    let bytes = string.as_bytes();
-    let size = 1 + bytes.len() + 2;
-    check_and_reserve(buf, size);
-    buf.put_u8(symb);
-    buf.extend(bytes);
-    write_rn(buf);
-}
-
-impl Encoder<RespValue> for RespCodec {
-    type Error = io::Error;
-
-    fn encode(&mut self, msg: RespValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        match msg {
-            RespValue::Nil => {
-                write_header(b'$', -1, buf);
-            }
-            RespValue::Array(ary) => {
-                write_header(b'*', ary.len() as i64, buf);
-                for v in ary {
-                    self.encode(v, buf)?;
+macro_rules! impl_toresp_integers {
+    ($($int_ty:ident),* $(,)*) => {
+        $(
+            impl ToRespInteger for $int_ty {
+                fn to_resp_integer(self) -> RespValue {
+                    let new_self = self as i64;
+                    new_self.to_resp_integer()
                 }
             }
-            RespValue::BulkString(bstr) => {
-                let len = bstr.len();
-                write_header(b'$', len as i64, buf);
-                check_and_reserve(buf, len + 2);
-                buf.extend(bstr);
-                write_rn(buf);
-            }
-            RespValue::Error(ref string) => {
-                write_simple_string(b'-', string, buf);
-            }
-            RespValue::Integer(val) => {
-                // Simple integer are just the header
-                write_header(b':', val, buf);
-            }
-            RespValue::SimpleString(ref string) => {
-                write_simple_string(b'+', string, buf);
-            }
-        }
-        Ok(())
-    }
+            integer_into_resp!($int_ty);
+        )*
+    };
 }
 
-#[inline]
-fn parse_error(message: String) -> Error {
-    Error::RESP(message, None)
-}
-
-/// Many RESP types have their length (which is either bytes or "number of elements", depending on context)
-/// encoded as a string, terminated by "\r\n", this looks for them.
-///
-/// Only return the string if the whole sequence is complete, including the terminator bytes (but those final
-/// two bytes will not be returned)
-///
-/// TODO - rename this function potentially, it's used for simple integers too
-fn scan_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, &[u8])>, Error> {
-    let length = buf.len();
-    let mut at_end = false;
-    let mut pos = idx;
-    loop {
-        if length <= pos {
-            return Ok(None);
-        }
-        match (at_end, buf[pos]) {
-            (true, b'\n') => return Ok(Some((pos + 1, &buf[idx..pos - 1]))),
-            (false, b'\r') => at_end = true,
-            (false, b'0'..=b'9') => (),
-            (false, b'-') => (),
-            (_, val) => {
-                return Err(parse_error(format!(
-                    "Unexpected byte in size_string: {}",
-                    val
-                )));
-            }
-        }
-        pos += 1;
-    }
-}
-
-fn scan_string(buf: &mut BytesMut, idx: usize) -> Option<(usize, String)> {
-    let length = buf.len();
-    let mut at_end = false;
-    let mut pos = idx;
-    loop {
-        if length <= pos {
-            return None;
-        }
-        match (at_end, buf[pos]) {
-            (true, b'\n') => {
-                let value = String::from_utf8_lossy(&buf[idx..pos - 1]).into_owned();
-                return Some((pos + 1, value));
-            }
-            (true, _) => at_end = false,
-            (false, b'\r') => at_end = true,
-            (false, _) => (),
-        }
-        pos += 1;
-    }
-}
-
-fn decode_raw_integer(buf: &mut BytesMut, idx: usize) -> Result<Option<(usize, i64)>, Error> {
-    match scan_integer(buf, idx) {
-        Ok(None) => Ok(None),
-        Ok(Some((pos, int_str))) => {
-            // Redis integers are transmitted as strings, so we first convert the raw bytes into a string...
-            match str::from_utf8(int_str) {
-                Ok(string) => {
-                    // ...and then parse the string.
-                    match string.parse() {
-                        Ok(int) => Ok(Some((pos, int))),
-                        Err(_) => Err(parse_error(format!("Not an integer: {}", string))),
-                    }
-                }
-                Err(_) => Err(parse_error(format!("Not a valid string: {:?}", int_str))),
-            }
-        }
-        Err(e) => Err(e),
-    }
-}
-
-type DecodeResult = Result<Option<(usize, RespValue)>, Error>;
-
-fn decode_bulk_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    match decode_raw_integer(buf, idx) {
-        Ok(None) => Ok(None),
-        Ok(Some((pos, -1))) => Ok(Some((pos, RespValue::Nil))),
-        Ok(Some((pos, size))) if size >= 0 => {
-            let size = size as usize;
-            let remaining = buf.len() - pos;
-            let required_bytes = size + 2;
-
-            if remaining < required_bytes {
-                return Ok(None);
-            }
-
-            let bulk_string = RespValue::BulkString(buf[pos..(pos + size)].to_vec());
-            Ok(Some((pos + required_bytes, bulk_string)))
-        }
-        Ok(Some((_, size))) => Err(parse_error(format!("Invalid string size: {}", size))),
-        Err(e) => Err(e),
-    }
-}
-
-fn decode_array(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    match decode_raw_integer(buf, idx) {
-        Ok(None) => Ok(None),
-        Ok(Some((pos, -1))) => Ok(Some((pos, RespValue::Nil))),
-        Ok(Some((pos, size))) if size >= 0 => {
-            let size = size as usize;
-            let mut pos = pos;
-            let mut values = Vec::with_capacity(size);
-            for _ in 0..size {
-                match decode(buf, pos) {
-                    Ok(None) => return Ok(None),
-                    Ok(Some((new_pos, value))) => {
-                        values.push(value);
-                        pos = new_pos;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(Some((pos, RespValue::Array(values))))
-        }
-        Ok(Some((_, size))) => Err(parse_error(format!("Invalid array size: {}", size))),
-        Err(e) => Err(e),
-    }
-}
-
-fn decode_integer(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    match decode_raw_integer(buf, idx) {
-        Ok(None) => Ok(None),
-        Ok(Some((pos, int))) => Ok(Some((pos, RespValue::Integer(int)))),
-        Err(e) => Err(e),
-    }
-}
-
-/// A simple string is any series of bytes that ends with `\r\n`
-#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
-fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    match scan_string(buf, idx) {
-        None => Ok(None),
-        Some((pos, string)) => Ok(Some((pos, RespValue::SimpleString(string)))),
-    }
-}
-
-#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
-fn decode_error(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    match scan_string(buf, idx) {
-        None => Ok(None),
-        Some((pos, string)) => Ok(Some((pos, RespValue::Error(string)))),
-    }
-}
-
-fn decode(buf: &mut BytesMut, idx: usize) -> DecodeResult {
-    let length = buf.len();
-    if length <= idx {
-        return Ok(None);
-    }
-
-    let first_byte = buf[idx];
-    match first_byte {
-        b'$' => decode_bulk_string(buf, idx + 1),
-        b'*' => decode_array(buf, idx + 1),
-        b':' => decode_integer(buf, idx + 1),
-        b'+' => decode_simple_string(buf, idx + 1),
-        b'-' => decode_error(buf, idx + 1),
-        _ => Err(parse_error(format!("Unexpected byte: {}", first_byte))),
-    }
-}
-
-impl Decoder for RespCodec {
-    type Item = RespValue;
-    type Error = Error;
-
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match decode(buf, 0) {
-            Ok(None) => Ok(None),
-            Ok(Some((pos, item))) => {
-                buf.advance(pos);
-                Ok(Some(item))
-            }
-            Err(e) => Err(e),
-        }
-    }
-}
+impl_toresp_integers!(isize, i32, u32);
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use bytes::BytesMut;
+    use crate::error::Error;
 
-    use tokio_util::codec::{Decoder, Encoder};
-
-    use super::{Error, FromResp, RespCodec, RespValue};
-
-    fn obj_to_bytes(obj: RespValue) -> Vec<u8> {
-        let mut bytes = BytesMut::new();
-        let mut codec = RespCodec;
-        codec.encode(obj, &mut bytes).unwrap();
-        bytes.to_vec()
-    }
-
-    #[test]
-    fn test_resp_array_macro() {
-        let resp_object = resp_array!["SET", "x"];
-        let bytes = obj_to_bytes(resp_object);
-        assert_eq!(b"*2\r\n$3\r\nSET\r\n$1\r\nx\r\n", bytes.as_slice());
-
-        let resp_object = resp_array!["RPUSH", "wyz"].append(vec!["a", "b"]);
-        let bytes = obj_to_bytes(resp_object);
-        assert_eq!(
-            &b"*4\r\n$5\r\nRPUSH\r\n$3\r\nwyz\r\n$1\r\na\r\n$1\r\nb\r\n"[..],
-            bytes.as_slice()
-        );
-
-        let vals = vec![String::from("a"), String::from("b")];
-        let resp_object = resp_array!["RPUSH", "xyz"].append(&vals);
-        let bytes = obj_to_bytes(resp_object);
-        assert_eq!(
-            &b"*4\r\n$5\r\nRPUSH\r\n$3\r\nxyz\r\n$1\r\na\r\n$1\r\nb\r\n"[..],
-            bytes.as_slice()
-        );
-    }
-
-    #[test]
-    fn test_bulk_string() {
-        let resp_object = RespValue::BulkString(b"THISISATEST".to_vec());
-        let mut bytes = BytesMut::new();
-        let mut codec = RespCodec;
-        codec.encode(resp_object.clone(), &mut bytes).unwrap();
-        assert_eq!(b"$11\r\nTHISISATEST\r\n".to_vec(), bytes.to_vec());
-
-        let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
-        assert_eq!(deserialized, resp_object);
-    }
-
-    #[test]
-    fn test_array() {
-        let resp_object = RespValue::Array(vec!["TEST1".into(), "TEST2".into()]);
-        let mut bytes = BytesMut::new();
-        let mut codec = RespCodec;
-        codec.encode(resp_object.clone(), &mut bytes).unwrap();
-        assert_eq!(
-            b"*2\r\n$5\r\nTEST1\r\n$5\r\nTEST2\r\n".to_vec(),
-            bytes.to_vec()
-        );
-
-        let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
-        assert_eq!(deserialized, resp_object);
-    }
-
-    #[test]
-    fn test_nil_string() {
-        let mut bytes = BytesMut::new();
-        bytes.extend_from_slice(&b"$-1\r\n"[..]);
-
-        let mut codec = RespCodec;
-        let deserialized = codec.decode(&mut bytes).unwrap().unwrap();
-        assert_eq!(deserialized, RespValue::Nil);
-    }
+    use super::{FromResp, RespValue};
 
     #[test]
     fn test_integer_overflow() {

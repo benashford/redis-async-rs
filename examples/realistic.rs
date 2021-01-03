@@ -11,9 +11,6 @@
 #[cfg(feature = "tokio02")]
 extern crate tokio_02 as tokio;
 
-#[cfg(feature = "tokio03")]
-extern crate tokio_03 as tokio;
-
 #[cfg(feature = "tokio10")]
 extern crate tokio_10 as tokio;
 
@@ -23,22 +20,34 @@ use futures_util::future;
 
 // use futures::{future, Future};
 
-use redis_async::{client, resp_array};
+use redis_async::{client::ConnectionBuilder, resp_array};
 
-/// An artificial "realistic" non-trivial example to demonstrate usage
+#[cfg(feature = "with_tokio")]
 #[tokio::main]
 async fn main() {
+    do_main().await;
+}
+
+#[cfg(feature = "with_async_std")]
+#[async_std::main]
+async fn main() {
+    do_main().await;
+}
+
+/// An artificial "realistic" non-trivial example to demonstrate usage
+async fn do_main() {
     // Create some completely arbitrary "test data"
     let test_data_size = 10;
     let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
 
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
 
-    let connection = client::paired_connect(addr)
+    let connection_builder = ConnectionBuilder::new(addr).expect("Cannot parse address");
+
+    let connection = connection_builder
+        .paired_connect()
         .await
         .expect("Cannot open connection");
 
@@ -46,7 +55,7 @@ async fn main() {
         let connection_inner = connection.clone();
         let incr_f = connection.send(resp_array!["INCR", "realistic_test_ctr"]);
         async move {
-            let ctr: String = incr_f.await.expect("Cannot increment");
+            let ctr: i64 = incr_f.await.expect("Cannot increment");
 
             let key = format!("rt_{}", ctr);
             let d_val = data.0.to_string();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2020 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,27 +10,34 @@
 
 //! Error handling
 
-use std::{error, fmt, io};
+use std::{fmt, io};
 
 use futures_channel::mpsc;
 
-use crate::resp;
+use thiserror::Error;
 
-#[derive(Debug)]
+use crate::protocol::resp;
+
+#[derive(Debug, Error)]
 pub enum Error {
     /// A non-specific internal error that prevented an operation from completing
+    #[error("Internal Error: {0}")]
     Internal(String),
 
     /// An IO error occurred
-    IO(io::Error),
+    #[error("IO Error: {0}")]
+    IO(#[from] io::Error),
 
     /// A RESP parsing/serialising error occurred
+    #[error("{0}, {1:?}")]
     RESP(String, Option<resp::RespValue>),
 
     /// A remote error
+    #[error("Remote Redis error: {0}")]
     Remote(String),
 
     /// Error creating a connection, or an error with a connection being closed unexpectedly
+    #[error("Connection error: {0}")]
     Connection(ConnectionReason),
 
     /// An unexpected error.  In this context "unexpected" means
@@ -40,7 +47,18 @@ pub enum Error {
     ///
     /// If any error is propagated this way that needs to be handled, then it should be made into
     /// a proper option.
+    #[error("Unexpected error: {0}")]
     Unexpected(String),
+}
+
+impl Error {
+    pub(crate) fn is_io(&self) -> bool {
+        matches!(self, Error::IO(_))
+    }
+
+    pub(crate) fn is_unexpected(&self) -> bool {
+        matches!(self, Error::Unexpected(_))
+    }
 }
 
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
@@ -55,46 +73,15 @@ pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
     Error::RESP(msg.into(), Some(resp))
 }
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::IO(err)
-    }
-}
-
 impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
     fn from(err: mpsc::TrySendError<T>) -> Error {
         Error::Unexpected(format!("Cannot write to channel: {}", err))
     }
 }
 
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Error::IO(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::Internal(s) => write!(f, "{}", s),
-            Error::IO(err) => write!(f, "{}", err),
-            Error::RESP(s, _) => write!(f, "{}", s),
-            Error::Remote(s) => write!(f, "{}", s),
-            Error::Connection(ConnectionReason::Connected) => {
-                write!(f, "Connection already established")
-            }
-            Error::Connection(ConnectionReason::Connecting) => write!(f, "Connection in progress"),
-            Error::Connection(ConnectionReason::ConnectionFailed) => {
-                write!(f, "The last attempt to establish a connection failed")
-            }
-            Error::Connection(ConnectionReason::NotConnected) => {
-                write!(f, "Connection has been closed")
-            }
-            Error::Unexpected(err) => write!(f, "{}", err),
-        }
+impl From<lwactors::ActorError> for Error {
+    fn from(err: lwactors::ActorError) -> Error {
+        Error::Internal(format!("Actor error: {}", err))
     }
 }
 
@@ -113,4 +100,15 @@ pub enum ConnectionReason {
     /// The connection is not currently connected, the connection will reconnect asynchronously,
     /// clients should try again
     NotConnected,
+}
+
+impl fmt::Display for ConnectionReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ConnectionReason::Connecting => "Connecting",
+            ConnectionReason::Connected => "Connected",
+            ConnectionReason::ConnectionFailed => "ConnectionFailed",
+            ConnectionReason::NotConnected => "NotConnected",
+        })
+    }
 }

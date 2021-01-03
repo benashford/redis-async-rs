@@ -8,16 +8,29 @@
  * except according to those terms.
  */
 
+#[cfg(feature = "with_async_std")]
+mod async_std;
+
 use std::net::SocketAddr;
+
+#[cfg(feature = "with_async_std")]
+use async_net::TcpStream;
 
 use futures_util::{SinkExt, StreamExt};
 
+#[cfg(feature = "with_tokio")]
 use tokio::net::TcpStream;
+#[cfg(feature = "with_tokio")]
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{error, resp};
+#[cfg(feature = "tokio_codec")]
+use crate::protocol::RespCodec;
+use crate::{error, protocol::FromResp};
 
-pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
+#[cfg(feature = "with_tokio")]
+pub type RespConnection = Framed<TcpStream, RespCodec>;
+#[cfg(feature = "with_async_std")]
+pub type RespConnection = async_std::RespTcpStream;
 
 /// Connect to a Redis server and return a Future that resolves to a
 /// `RespConnection` for reading and writing asynchronously.
@@ -34,11 +47,19 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
+#[cfg(feature = "with_tokio")]
 pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect(addr).await?;
-    Ok(resp::RespCodec.framed(tcp_stream))
+    Ok(RespCodec.framed(tcp_stream))
 }
 
+#[cfg(feature = "with_async_std")]
+pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
+    let tcp_stream = TcpStream::connect(addr).await?;
+    Ok(RespConnection::new(tcp_stream))
+}
+
+/// Connect with optional authentication
 pub async fn connect_with_auth(
     addr: &SocketAddr,
     username: Option<&str>,
@@ -57,7 +78,7 @@ pub async fn connect_with_auth(
 
         connection.send(auth).await?;
         match connection.next().await {
-            Some(Ok(value)) => match resp::FromResp::from_resp(value) {
+            Some(Ok(value)) => match FromResp::from_resp(value) {
                 Ok(()) => (),
                 Err(e) => return Err(e),
             },
@@ -80,7 +101,7 @@ mod test {
         stream::{self, StreamExt},
     };
 
-    use crate::resp;
+    use crate::protocol::resp;
 
     #[tokio::test]
     async fn can_connect() {

@@ -11,9 +11,6 @@
 #[cfg(feature = "tokio02")]
 extern crate tokio_02 as tokio;
 
-#[cfg(feature = "tokio03")]
-extern crate tokio_03 as tokio;
-
 #[cfg(feature = "tokio10")]
 extern crate tokio_10 as tokio;
 
@@ -23,8 +20,19 @@ use futures::{sink::SinkExt, stream::StreamExt};
 
 use redis_async::{client, resp_array};
 
+#[cfg(feature = "with_tokio")]
 #[tokio::main]
 async fn main() {
+    do_main().await;
+}
+
+#[cfg(feature = "with_async_std")]
+#[async_std::main]
+async fn main() {
+    do_main().await;
+}
+
+async fn do_main() {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:6379".to_string())

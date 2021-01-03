@@ -19,20 +19,17 @@ use std::task::{Context, Poll};
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{
-    future::{self, TryFutureExt},
+    future::{self, Either},
     stream::StreamExt,
 };
 
 use super::{
     connect::{connect_with_auth, RespConnection},
+    reconnect::{ActionWork, Reconnectable, ReconnectableActions, ReconnectableConnectionFuture},
     ConnectionBuilder,
 };
 
-use crate::{
-    error,
-    reconnect::{reconnect, Reconnect},
-    resp,
-};
+use crate::{error, protocol::resp, task::spawn};
 
 /// The state of sending messages to a Redis server
 enum SendStatus {
@@ -56,18 +53,21 @@ enum ReceiveStatus {
     NotReady,
 }
 
-type Responder = oneshot::Sender<resp::RespValue>;
-type SendPayload = (resp::RespValue, Responder);
+#[derive(Debug)]
+enum SendPayload {
+    One(resp::RespValue, oneshot::Sender<resp::RespValue>),
+    Batch(Vec<(resp::RespValue, oneshot::Sender<resp::RespValue>)>),
+}
 
-// /// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
-// /// results onto a `RespConnection` that is otherwise unpaired
+/// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
+/// results onto a `RespConnection` that is otherwise unpaired
 struct PairedConnectionInner {
     /// The underlying connection that talks the RESP protocol
     connection: RespConnection,
     /// The channel upon which commands are received
-    out_rx: mpsc::UnboundedReceiver<SendPayload>,
+    out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
     /// The queue of waiting oneshot's for commands sent but results not yet received
-    waiting: VecDeque<Responder>,
+    waiting: VecDeque<oneshot::Sender<resp::RespValue>>,
 
     /// The status of the underlying connection
     send_status: SendStatus,
@@ -193,23 +193,85 @@ impl Future for PairedConnectionInner {
     }
 }
 
+impl ActionWork for SendPayload {
+    type ConnectionType =
+        mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>;
+
+    fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error> {
+        match self {
+            SendPayload::One(value, receiver) => {
+                con.unbounded_send((value, receiver))?;
+            }
+            SendPayload::Batch(batches) => {
+                for (value, receiver) in batches {
+                    con.unbounded_send((value, receiver))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct PairedConnectionActions {
+    addr: SocketAddr,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
+}
+
+impl ReconnectableActions for PairedConnectionActions {
+    type WorkPayload = SendPayload;
+
+    fn do_connection(
+        &self,
+    ) -> ReconnectableConnectionFuture<
+        mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+        error::Error,
+    > {
+        let con_f = inner_conn_fn(self.addr, self.username.clone(), self.password.clone());
+        Box::pin(con_f)
+    }
+}
+
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Debug, Clone)]
 pub struct PairedConnection {
-    out_tx_c: Arc<Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>>,
+    out_tx_c: Arc<Reconnectable<PairedConnectionActions>>,
+}
+
+impl PairedConnection {
+    async fn init(
+        addr: SocketAddr,
+        username: Option<Arc<str>>,
+        password: Option<Arc<str>>,
+    ) -> Result<Self, error::Error> {
+        Ok(PairedConnection {
+            out_tx_c: Arc::new(
+                Reconnectable::init(PairedConnectionActions {
+                    addr,
+                    username,
+                    password,
+                })
+                .await?,
+            ),
+        })
+    }
 }
 
 async fn inner_conn_fn(
     addr: SocketAddr,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
-) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
+) -> Result<mpsc::UnboundedSender<(resp::RespValue, oneshot::Sender<resp::RespValue>)>, error::Error>
+{
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
     let connection = connect_with_auth(&addr, username, password).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
-    tokio::spawn(paired_connection_inner);
+    spawn(paired_connection_inner);
+
     Ok(out_tx)
 }
 
@@ -219,35 +281,8 @@ impl ConnectionBuilder {
         let username = self.username.clone();
         let password = self.password.clone();
 
-        let work_fn = |con: &mpsc::UnboundedSender<SendPayload>, act| {
-            con.unbounded_send(act).map_err(|e| e.into())
-        };
-
-        let conn_fn = move || {
-            let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-            Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
-        };
-
-        let reconnecting_con = reconnect(work_fn, conn_fn);
-        reconnecting_con.map_ok(|con| PairedConnection {
-            out_tx_c: Arc::new(con),
-        })
+        PairedConnection::init(addr, username, password)
     }
-}
-
-/// The default starting point to use most default Redis functionality.
-///
-/// Returns a future that resolves to a `PairedConnection`. The future will complete when the
-/// initial connection is established.
-///
-/// Once the initial connection is established, the connection will attempt to reconnect should
-/// the connection be broken (e.g. the Redis server being restarted), but reconnections occur
-/// asynchronously, so all commands issued while the connection is unavailable will error, it is
-/// the client's responsibility to retry commands as applicable. Also, at least one command needs
-/// to be tried against the connection to trigger the re-connection attempt; this means at least
-/// one command will definitely fail in a disconnect/reconnect scenario.
-pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.paired_connect().await
 }
 
 impl PairedConnection {
@@ -263,41 +298,71 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Output = Result<T, error::Error>>
+    pub fn send<'a, T>(
+        &'a self,
+        msg: resp::RespValue,
+    ) -> impl Future<Output = Result<T, error::Error>> + 'a
     where
-        T: resp::FromResp,
+        T: resp::FromResp + 'a,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
             _ => {
-                return future::Either::Right(future::ready(Err(error::internal(
+                return Either::Left(future::err(error::internal(
                     "Command must be a RespValue::Array",
-                ))));
+                )));
             }
         }
 
         let (tx, rx) = oneshot::channel();
-        match self.out_tx_c.do_work((msg, tx)) {
-            Ok(()) => future::Either::Left(async move {
-                match rx.await {
-                    Ok(v) => Ok(T::from_resp(v)?),
-                    Err(_) => Err(error::internal(
-                        "Connection closed before response received",
-                    )),
+        let work_f = self.out_tx_c.do_work(SendPayload::One(msg, tx));
+
+        Either::Right(async {
+            let _ = work_f.await?;
+            match rx.await {
+                Ok(v) => Ok(T::from_resp(v)?),
+                Err(_) => Err(error::internal(
+                    "Connection closed before response received",
+                )),
+            }
+        })
+    }
+
+    pub fn send_batch(
+        &self,
+        msgs: Vec<resp::RespValue>,
+    ) -> impl Future<Output = Result<Vec<resp::RespValue>, error::Error>> + '_ {
+        let batch_size = msgs.len();
+        let mut work = Vec::with_capacity(batch_size);
+        let mut receivers = Vec::with_capacity(batch_size);
+
+        for msg in msgs {
+            let (tx, rx) = oneshot::channel();
+            work.push((msg, tx));
+            receivers.push(rx);
+        }
+
+        let work_f = self.out_tx_c.do_work(SendPayload::Batch(work));
+
+        async move {
+            let _ = work_f.await?;
+            let mut results = Vec::with_capacity(batch_size);
+            for receiver in receivers {
+                match receiver.await {
+                    Ok(v) => results.push(v),
+                    Err(_) => {
+                        return Err(error::internal(
+                            "Connection closed before response received",
+                        ))
+                    }
                 }
-            }),
-            Err(e) => future::Either::Right(future::ready(Err(e))),
+            }
+            Ok(results)
         }
     }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
-        let send_f = self.send::<resp::RespValue>(msg);
-        let forget_f = async {
-            if let Err(e) = send_f.await {
-                log::error!("Error in send_and_forget: {}", e);
-            }
-        };
-        tokio::spawn(forget_f);
+        let _ = self.send::<resp::RespValue>(msg);
     }
 }
 
@@ -307,9 +372,9 @@ mod test {
 
     #[tokio::test]
     async fn can_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
             .expect("Cannot establish connection");
 
@@ -326,18 +391,18 @@ mod test {
 
     #[tokio::test]
     async fn complex_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
             .expect("Cannot establish connection");
 
-        let value: String = connection
+        let value: u64 = connection
             .send(resp_array!["INCR", "CTR"])
             .await
             .expect("Cannot increment counter");
         let result: String = connection
-            .send(resp_array!["SET", "LASTCTR", value])
+            .send(resp_array!["SET", "LASTCTR", value.to_string()])
             .await
             .expect("Cannot set value");
 
@@ -346,11 +411,12 @@ mod test {
 
     #[tokio::test]
     async fn sending_a_lot_of_data_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
-        let connection = super::paired_connect(addr)
+        let connection = ConnectionBuilder::new("127.0.0.1:6379")
+            .expect("Cannot build builder")
+            .paired_connect()
             .await
-            .expect("Cannot connect to Redis");
+            .expect("Cannot establish connection");
+
         let mut futures = Vec::with_capacity(1000);
         for i in 0..1000 {
             let key = format!("X_{}", i);

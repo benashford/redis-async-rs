@@ -20,15 +20,13 @@
 //! in one response.
 //! * `pubsub_connect` is used for Redis's PUBSUB functionality.
 
-pub mod connect;
-#[macro_use]
-pub mod paired;
 mod builder;
-pub mod pubsub;
+pub mod connect;
+pub(crate) mod paired;
+pub(crate) mod pubsub;
+mod reconnect;
 
 pub use self::{
-    builder::ConnectionBuilder,
-    connect::connect,
-    paired::{paired_connect, PairedConnection},
-    pubsub::{pubsub_connect, PubsubConnection},
+    builder::ConnectionBuilder, connect::connect, paired::PairedConnection,
+    pubsub::PubsubConnection,
 };
