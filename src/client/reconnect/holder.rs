@@ -23,20 +23,19 @@ use super::ActionWork;
 
 /// A standalone actor which holds a Redis connection
 #[derive(Debug)]
-pub(crate) struct ConnectionHolder<T, F> {
-    queue: ActorSender<
-        ConnectionHolderAction<T, F>,
-        ConnectionHolderResult<error::Error>,
-        error::Error,
-    >,
+pub(crate) struct ConnectionHolder<F>
+where
+    F: ActionWork,
+{
+    queue:
+        ActorSender<ConnectionHolderAction<F>, ConnectionHolderResult<error::Error>, error::Error>,
 }
 
-impl<T, F> ConnectionHolder<T, F>
+impl<F> ConnectionHolder<F>
 where
-    T: Send + Sync + 'static,
-    F: ActionWork<ConnectionType = T> + Send + 'static,
+    F: ActionWork + Send + 'static,
 {
-    pub(crate) fn new(t: T) -> Self {
+    pub(crate) fn new(t: F::ConnectionType) -> Self {
         ConnectionHolder {
             queue: actor(ConnectionHolderState::new(t)),
         }
@@ -62,7 +61,7 @@ where
     }
 
     /// Set a new connection if previously advised to attempt re-connection.
-    pub(crate) async fn set_connection(&self, con: T) -> Result<(), error::Error> {
+    pub(crate) async fn set_connection(&self, con: F::ConnectionType) -> Result<(), error::Error> {
         match self
             .queue
             .invoke(ConnectionHolderAction::SetConnection(con))
@@ -85,9 +84,9 @@ where
     }
 }
 
-impl<T, F> Clone for ConnectionHolder<T, F>
+impl<F> Clone for ConnectionHolder<F>
 where
-    T: Send,
+    F: ActionWork,
 {
     fn clone(&self) -> Self {
         ConnectionHolder {
@@ -100,18 +99,20 @@ where
 const MAX_CONNECTION_DUR: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
-enum ConnectionHolderAction<T, F> {
+enum ConnectionHolderAction<F>
+where
+    F: ActionWork,
+{
     DoWork(F),
-    SetConnection(T),
+    SetConnection(F::ConnectionType),
     SetConnectionFailed,
 }
 
-impl<T, F> Action for ConnectionHolderAction<T, F>
+impl<F> Action for ConnectionHolderAction<F>
 where
-    T: Send,
-    F: ActionWork<ConnectionType = T>,
+    F: ActionWork,
 {
-    type State = ConnectionHolderState<T>;
+    type State = ConnectionHolderState<F::ConnectionType>;
     type Result = ConnectionHolderResult<error::Error>;
     type Error = error::Error;
 

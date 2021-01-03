@@ -25,7 +25,7 @@ use futures_util::{
 
 use super::{
     connect::{connect_with_auth, RespConnection},
-    reconnect::{ActionWork, Reconnectable, ReconnectableActions},
+    reconnect::{ActionWork, Reconnectable, ReconnectableActions, ReconnectableConnectionFuture},
     ConnectionBuilder,
 };
 
@@ -190,21 +190,11 @@ impl Future for PairedConnectionInner {
     }
 }
 
-#[derive(Debug)]
-struct PairedConnectionWork {
-    payload: SendPayload,
-}
-
-impl ActionWork for PairedConnectionWork {
-    type WorkPayload = SendPayload;
+impl ActionWork for SendPayload {
     type ConnectionType = mpsc::UnboundedSender<SendPayload>;
 
-    fn init(payload: Self::WorkPayload) -> Self {
-        PairedConnectionWork { payload }
-    }
-
     fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error> {
-        con.unbounded_send(self.payload).map_err(|e| e.into())
+        con.unbounded_send(self).map_err(|e| e.into())
     }
 }
 
@@ -217,12 +207,10 @@ struct PairedConnectionActions {
 
 impl ReconnectableActions for PairedConnectionActions {
     type WorkPayload = SendPayload;
-    type WorkFn = PairedConnectionWork;
-    type ConnectionType = mpsc::UnboundedSender<SendPayload>;
 
     fn do_connection(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::ConnectionType, error::Error>> + Send>> {
+    ) -> ReconnectableConnectionFuture<mpsc::UnboundedSender<SendPayload>, error::Error> {
         let con_f = inner_conn_fn(self.addr, self.username.clone(), self.password.clone());
         Box::pin(con_f)
     }
@@ -320,6 +308,13 @@ impl PairedConnection {
             }
         })
     }
+
+    // pub fn send_batch(
+    //     &self,
+    //     msgs: Vec<resp::RespValue>,
+    // ) -> impl Future<Output = Result<Vec<resp::RespValue>, error::Error>> {
+
+    // }
 
     pub fn send_and_forget(&self, msg: resp::RespValue) {
         let _ = self.send::<resp::RespValue>(msg);

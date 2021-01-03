@@ -10,7 +10,7 @@
 
 mod holder;
 
-use std::{future::Future, pin::Pin};
+use std::{fmt, future::Future, pin::Pin};
 
 use crate::{error, task::spawn};
 
@@ -18,23 +18,24 @@ use holder::ConnectionHolder;
 
 /// A trait to be implemented by the chunks of work that are sent to a Redis connection
 pub(crate) trait ActionWork {
-    type WorkPayload;
-    type ConnectionType;
-
-    fn init(payload: Self::WorkPayload) -> Self;
+    type ConnectionType: Send + fmt::Debug;
 
     fn call(self, con: &Self::ConnectionType) -> Result<(), error::Error>;
 }
 
+pub(crate) type ReconnectableConnectionFuture<C, E> =
+    Pin<Box<dyn Future<Output = Result<C, E>> + Send>>;
+
 /// A trait to be implemented to allow a connection to be re-established should it be lost
 pub(crate) trait ReconnectableActions {
-    type WorkPayload;
-    type WorkFn: ActionWork<WorkPayload = Self::WorkPayload, ConnectionType = Self::ConnectionType>;
-    type ConnectionType: Send + Sync + 'static;
+    type WorkPayload: ActionWork + 'static;
 
     fn do_connection(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Self::ConnectionType, error::Error>> + Send>>;
+    ) -> ReconnectableConnectionFuture<
+        <Self::WorkPayload as ActionWork>::ConnectionType,
+        error::Error,
+    >;
 }
 
 /// A wrapper around a Redis connection that will automatically try and re-connect should the
@@ -44,14 +45,14 @@ pub(crate) struct Reconnectable<A>
 where
     A: ReconnectableActions,
 {
-    con: ConnectionHolder<A::ConnectionType, A::WorkFn>,
+    con: ConnectionHolder<A::WorkPayload>,
     actions: A,
 }
 
 impl<A> Reconnectable<A>
 where
     A: ReconnectableActions,
-    A::WorkFn: Send + 'static,
+    A::WorkPayload: Send,
 {
     pub(crate) async fn init(actions: A) -> Result<Self, error::Error> {
         let t = actions.do_connection().await?;
@@ -65,7 +66,7 @@ where
         &self,
         work: A::WorkPayload,
     ) -> impl Future<Output = Result<(), error::Error>> + '_ {
-        let work_f = self.con.do_work(A::WorkFn::init(work));
+        let work_f = self.con.do_work(work);
 
         async move {
             if work_f.await? {
