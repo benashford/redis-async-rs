@@ -18,7 +18,7 @@ log = "^0.4.11"
 lwactors = "0.2"
 futures-channel = "^0.3.7"
 futures-sink = "^0.3.7"
-futures-util = "^0.3.7"
+futures-util = { version = "^0.3.7", features = ["sink"] }
 thiserror = "1.0"
 tokio_02 = { package = "tokio", version = "0.2", features = ["rt-core", "net", "time"], optional = true}
 tokio_10 = { package = "tokio", version = "1.0", features = ["rt", "net", "time"], optional = true }
