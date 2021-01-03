@@ -8,14 +8,18 @@
  * except according to those terms.
  */
 
+use std::cmp;
+
 use bytes::{BufMut, BytesMut};
 
 use crate::protocol::resp::RespValue;
 
+const DEFAULT_MESSAGE_SIZE: usize = 1024;
+
 fn check_and_reserve(buf: &mut BytesMut, amt: usize) {
     let remaining_bytes = buf.remaining_mut();
     if remaining_bytes < amt {
-        buf.reserve(amt);
+        buf.reserve(cmp::max(amt, DEFAULT_MESSAGE_SIZE));
     }
 }
 
