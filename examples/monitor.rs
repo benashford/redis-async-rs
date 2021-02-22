@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,9 +10,6 @@
 
 #[cfg(feature = "tokio02")]
 extern crate tokio_02 as tokio;
-
-#[cfg(feature = "tokio03")]
-extern crate tokio_03 as tokio;
 
 #[cfg(feature = "tokio10")]
 extern crate tokio_10 as tokio;

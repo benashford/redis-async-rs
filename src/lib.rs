@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -59,13 +59,6 @@ extern crate bytes_05 as bytes;
 extern crate tokio_02 as tokio;
 #[cfg(feature = "tokio02")]
 extern crate tokio_util_03 as tokio_util;
-
-#[cfg(feature = "tokio03")]
-extern crate bytes_06 as bytes;
-#[cfg(feature = "tokio03")]
-extern crate tokio_03 as tokio;
-#[cfg(feature = "tokio03")]
-extern crate tokio_util_05 as tokio_util;
 
 #[cfg(feature = "tokio10")]
 extern crate bytes_10 as bytes;

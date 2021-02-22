@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -11,29 +11,24 @@ edition = "2018"
 
 [dependencies]
 bytes_05 = { package = "bytes", version = "0.5", optional = true }
-bytes_06 = { package = "bytes", version = "^0.6.0", optional = true }
 bytes_10 = { package = "bytes", version = "1.0", optional = true }
 log = "^0.4.11"
 futures-channel = "^0.3.7"
 futures-sink = "^0.3.7"
-futures-util = "^0.3.7"
+futures-util = { version = "^0.3.7", features = ["sink"] }
 tokio_02 = { package = "tokio", version = "0.2", features = ["rt-core", "net", "time"], optional = true}
-tokio_03 = { package = "tokio", version = "^0.3.2", features = ["rt", "net", "time"], optional = true }
 tokio_10 = { package = "tokio", version = "1.0", features = ["rt", "net", "time"], optional = true }
 tokio-util_03 = { package = "tokio-util", version = "0.3", features = ["codec"], optional = true }
-tokio-util_05 = { package = "tokio-util", version = "^0.5", features = ["codec"], optional = true }
 tokio-util_06 = { package = "tokio-util", version = "0.6", features = ["codec"], optional = true }
 
 [dev-dependencies]
 env_logger = "^0.8.1"
 futures = "^0.3.7"
 tokio_02 = { package = "tokio", version = "0.2", features = ["full"] }
-tokio_03 = { package = "tokio", version = "^0.3.2", features = ["full"] }
 tokio_10 = { package = "tokio", version = "1.0", features = ["full"] }
 
 [features]
-default = ["tokio03"]
+default = ["tokio10"]
 
 tokio02 = ["bytes_05", "tokio_02", "tokio-util_03"]
-tokio03 = ["bytes_06", "tokio_03", "tokio-util_05"]
 tokio10 = ["bytes_10", "tokio_10", "tokio-util_06"]
