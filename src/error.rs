@@ -81,7 +81,7 @@ impl fmt::Display for Error {
         match self {
             Error::Internal(s) => write!(f, "{}", s),
             Error::IO(err) => write!(f, "{}", err),
-            Error::RESP(s, _) => write!(f, "{}", s),
+            Error::RESP(s, resp) => write!(f, "{}: {:?}", s, resp),
             Error::Remote(s) => write!(f, "{}", s),
             Error::Connection(ConnectionReason::Connected) => {
                 write!(f, "Connection already established")

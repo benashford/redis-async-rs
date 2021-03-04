@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -239,7 +239,10 @@ impl FromResp for () {
                     None,
                 )),
             },
-            _ => Err(error::resp("Unexpected value", resp)),
+            _ => Err(error::resp(
+                "Unexpected value, should be encoded as a SimpleString",
+                resp,
+            )),
         }
     }
 }
@@ -265,7 +268,10 @@ where
                     ))
                 }
             }
-            _ => Err(error::resp("Unexpected value", resp)),
+            _ => Err(error::resp(
+                "Unexpected value, should be encoded as an array",
+                resp,
+            )),
         }
     }
 }
@@ -293,7 +299,10 @@ where
                     ))
                 }
             }
-            _ => Err(error::resp("Unexpected value", resp)),
+            _ => Err(error::resp(
+                "Unexpected value, should be encoded as an array",
+                resp,
+            )),
         }
     }
 }
