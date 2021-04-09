@@ -228,7 +228,9 @@ impl PubsubConnectionInner {
             b"message" => match self.subscriptions.get(&topic) {
                 Some(sender) => {
                     if let Err(error) = sender.unbounded_send(Ok(msg)) {
-                        return Err(error::internal(format!("Cannot send message: {}", error)));
+                        if !error.is_disconnected() {
+                            return Err(error::internal(format!("Cannot send message: {}", error)));
+                        }
                     }
                 }
                 None => {
@@ -241,7 +243,9 @@ impl PubsubConnectionInner {
             b"pmessage" => match self.psubscriptions.get(&topic) {
                 Some(sender) => {
                     if let Err(error) = sender.unbounded_send(Ok(msg)) {
-                        return Err(error::internal(format!("Cannot send message: {}", error)));
+                        if !error.is_disconnected() {
+                            return Err(error::internal(format!("Cannot send message: {}", error)));
+                        }
                     }
                 }
                 None => {
