@@ -1,6 +1,5 @@
 use std::{future::Future, pin::Pin};
 
-
 use crate::client::connect::RespConnection;
 use crate::error::Error;
 

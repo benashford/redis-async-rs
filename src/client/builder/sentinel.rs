@@ -12,6 +12,7 @@ use crate::resp::RespValue;
 
 const SENTINEL_CONNECTION_TIMEOUT: u64 = 500;
 
+/// Builder connecting to Redis through Sentinel.
 pub struct SentinelConnectionBuilder {
     sentinel_addresses: Vec<String>,
     sentinel_username: Option<String>,

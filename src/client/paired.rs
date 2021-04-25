@@ -18,15 +18,18 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{
-    future,
-    stream::StreamExt,
+use futures_util::{future, stream::StreamExt};
+
+use crate::client::{
+    builder::{redis::RedisConnectionBuilder, ConnectionBuilder},
+    connect::RespConnection,
+    reconnect::{ComplexConnection, Reconnecting},
 };
 
-use super::reconnect_new::{ComplexConnection, Reconnecting};
-use super::{ConnectionBuilder, builder::redis::RedisConnectionBuilder, connect::RespConnection};
-
-use crate::{error::{self, Error}, resp::{self, RespValue}};
+use crate::{
+    error::{self, Error},
+    resp::{self, RespValue},
+};
 
 /// The state of sending messages to a Redis server
 enum SendStatus {
@@ -208,12 +211,20 @@ pub struct PairedConnection {
 }
 
 pub trait PairedConnectionBuilder: ConnectionBuilder + Sized {
-    fn paired_connect<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>>;
-    fn paired_reconnecting(self) -> Pin<Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>>;
+    fn paired_connect<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>>;
+    fn paired_reconnecting(
+        self,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>,
+    >;
 }
 
-impl <B: ConnectionBuilder> PairedConnectionBuilder for B {
-    fn paired_connect<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>> {
+impl<B: ConnectionBuilder> PairedConnectionBuilder for B {
+    fn paired_connect<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>> {
         Box::pin(async move {
             let primitive = self.connect().await?;
             let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -221,10 +232,12 @@ impl <B: ConnectionBuilder> PairedConnectionBuilder for B {
         })
     }
 
-    fn paired_reconnecting(self) -> Pin<Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>> {
-        Box::pin(async move {
-            Reconnecting::<B, PairedConnection>::start(self).await
-        })
+    fn paired_reconnecting(
+        self,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>,
+    > {
+        Box::pin(async move { Reconnecting::<B, PairedConnection>::start(self).await })
     }
 }
 
@@ -236,12 +249,18 @@ impl <B: ConnectionBuilder> PairedConnectionBuilder for B {
 /// This connection does **not** reconnect automatically. See Reconnect if you're
 /// interested in reconnecting.
 pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
-    RedisConnectionBuilder::new(addr.to_string()).paired_connect().await
+    RedisConnectionBuilder::new(addr.to_string())
+        .paired_connect()
+        .await
 }
 
 // TODO add doc comment
-pub async fn paired_reconnecting(addr: SocketAddr) -> Result<Reconnecting<RedisConnectionBuilder, PairedConnection>, error::Error> {
-    RedisConnectionBuilder::new(addr.to_string()).paired_reconnecting().await
+pub async fn paired_reconnecting(
+    addr: SocketAddr,
+) -> Result<Reconnecting<RedisConnectionBuilder, PairedConnection>, error::Error> {
+    RedisConnectionBuilder::new(addr.to_string())
+        .paired_reconnecting()
+        .await
 }
 
 // TODO add paired_connect_reconnecting?
@@ -299,7 +318,10 @@ impl PairedConnection {
 
 impl ComplexConnection for PairedConnection {
     /// Creates paired connection by wrapping a primitive connection with pairing logic.
-    fn from_primitive(primitive: RespConnection, error_sender: tokio::sync::oneshot::Sender<()>) -> Self {
+    fn from_primitive(
+        primitive: RespConnection,
+        error_sender: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
         let (out_tx, out_rx) = mpsc::unbounded();
         let paired_connection_inner = PairedConnectionInner::new(primitive, out_rx, error_sender);
         tokio::spawn(paired_connection_inner);
@@ -310,7 +332,7 @@ impl ComplexConnection for PairedConnection {
     }
 }
 
-impl <B: ConnectionBuilder + Send + Sync + 'static> Reconnecting<B, PairedConnection> {
+impl<B: ConnectionBuilder + Send + Sync + 'static> Reconnecting<B, PairedConnection> {
     /// Sends message using the currently active connection.
     /// This is a shorthand for `.current().await?.send`.
     pub async fn send<T: resp::FromResp>(&self, msg: RespValue) -> Result<T, Error> {

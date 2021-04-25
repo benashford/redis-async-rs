@@ -23,13 +23,14 @@
 pub mod connect;
 #[macro_use]
 pub mod paired;
-mod builder;
+pub mod builder;
 pub mod pubsub;
-mod reconnect_new;
+pub mod reconnect;
 
 pub use self::{
-    builder::ConnectionBuilder,
+    builder::redis::RedisConnectionBuilder,
+    builder::sentinel::SentinelConnectionBuilder,
     connect::connect,
-    paired::{paired_connect, PairedConnection},
-    pubsub::{pubsub_connect, PubsubConnection},
+    paired::{paired_connect, paired_reconnecting, PairedConnection},
+    pubsub::{pubsub_connect, pubsub_reconnecting, PubsubConnection},
 };

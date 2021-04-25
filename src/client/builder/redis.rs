@@ -4,6 +4,7 @@ use super::ConnectionBuilder;
 use crate::client::connect::{self, RespConnection};
 use crate::error::Error;
 
+/// Builder connecting directly to Redis.
 pub struct RedisConnectionBuilder {
     address: String,
     username: Option<String>,
