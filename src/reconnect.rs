@@ -7,7 +7,7 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
-
+/*
 use std::fmt;
 use std::future::Future;
 use std::mem;
@@ -223,3 +223,4 @@ where
         tokio::spawn(reconnect_f);
     }
 }
+*/

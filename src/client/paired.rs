@@ -19,20 +19,14 @@ use std::task::{Context, Poll};
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{
-    future::{self, TryFutureExt},
+    future,
     stream::StreamExt,
 };
 
-use super::{
-    connect::{connect_with_auth, RespConnection},
-    ConnectionBuilder,
-};
+use super::reconnect_new::{ComplexConnection, Reconnecting};
+use super::{ConnectionBuilder, builder::redis::RedisConnectionBuilder, connect::RespConnection};
 
-use crate::{
-    error,
-    reconnect::{reconnect, Reconnect},
-    resp,
-};
+use crate::{error::{self, Error}, resp::{self, RespValue}};
 
 /// The state of sending messages to a Redis server
 enum SendStatus {
@@ -71,18 +65,23 @@ struct PairedConnectionInner {
 
     /// The status of the underlying connection
     send_status: SendStatus,
+
+    /// TODO add comment
+    error_sender: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl PairedConnectionInner {
     fn new(
         con: RespConnection,
         out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+        error_sender: tokio::sync::oneshot::Sender<()>,
     ) -> Self {
         PairedConnectionInner {
             connection: con,
             out_rx,
             waiting: VecDeque::new(),
             send_status: SendStatus::Ok,
+            error_sender: Some(error_sender),
         }
     }
 
@@ -112,6 +111,10 @@ impl PairedConnectionInner {
         let message = match status {
             SendStatus::End => {
                 self.send_status = SendStatus::End;
+
+                let error_sender = std::mem::replace(&mut self.error_sender, None);
+                let _ = error_sender.map(|s| s.send(()));
+
                 return Ok(false);
             }
             SendStatus::Full(msg) => msg,
@@ -143,7 +146,12 @@ impl PairedConnectionInner {
             }
         }
         match self.connection.poll_next_unpin(cx) {
-            Poll::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
+            Poll::Ready(None) => {
+                let error_sender = std::mem::replace(&mut self.error_sender, None);
+                let _ = error_sender.map(|s| s.send(()));
+
+                Err(error::unexpected("Connection to Redis closed unexpectedly"))
+            }
             Poll::Ready(Some(msg)) => {
                 let tx = match self.waiting.pop_front() {
                     Some(tx) => tx,
@@ -196,41 +204,26 @@ impl Future for PairedConnectionInner {
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Debug, Clone)]
 pub struct PairedConnection {
-    out_tx_c: Arc<Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>>,
+    out_tx_c: Arc<mpsc::UnboundedSender<SendPayload>>,
 }
 
-async fn inner_conn_fn(
-    addr: SocketAddr,
-    username: Option<Arc<str>>,
-    password: Option<Arc<str>>,
-) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
-    let username = username.as_ref().map(|u| u.as_ref());
-    let password = password.as_ref().map(|p| p.as_ref());
-    let connection = connect_with_auth(&addr, username, password).await?;
-    let (out_tx, out_rx) = mpsc::unbounded();
-    let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
-    tokio::spawn(paired_connection_inner);
-    Ok(out_tx)
+pub trait PairedConnectionBuilder: ConnectionBuilder + Sized {
+    fn paired_connect<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>>;
+    fn paired_reconnecting(self) -> Pin<Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>>;
 }
 
-impl ConnectionBuilder {
-    pub fn paired_connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
-        let addr = self.addr;
-        let username = self.username.clone();
-        let password = self.password.clone();
+impl <B: ConnectionBuilder> PairedConnectionBuilder for B {
+    fn paired_connect<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<PairedConnection, error::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let primitive = self.connect().await?;
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            Ok(PairedConnection::from_primitive(primitive, tx))
+        })
+    }
 
-        let work_fn = |con: &mpsc::UnboundedSender<SendPayload>, act| {
-            con.unbounded_send(act).map_err(|e| e.into())
-        };
-
-        let conn_fn = move || {
-            let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-            Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
-        };
-
-        let reconnecting_con = reconnect(work_fn, conn_fn);
-        reconnecting_con.map_ok(|con| PairedConnection {
-            out_tx_c: Arc::new(con),
+    fn paired_reconnecting(self) -> Pin<Box<dyn Future<Output = Result<Reconnecting<Self, PairedConnection>, error::Error>> + Send>> {
+        Box::pin(async move {
+            Reconnecting::<B, PairedConnection>::start(self).await
         })
     }
 }
@@ -240,15 +233,18 @@ impl ConnectionBuilder {
 /// Returns a future that resolves to a `PairedConnection`. The future will complete when the
 /// initial connection is established.
 ///
-/// Once the initial connection is established, the connection will attempt to reconnect should
-/// the connection be broken (e.g. the Redis server being restarted), but reconnections occur
-/// asynchronously, so all commands issued while the connection is unavailable will error, it is
-/// the client's responsibility to retry commands as applicable. Also, at least one command needs
-/// to be tried against the connection to trigger the re-connection attempt; this means at least
-/// one command will definitely fail in a disconnect/reconnect scenario.
+/// This connection does **not** reconnect automatically. See Reconnect if you're
+/// interested in reconnecting.
 pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.paired_connect().await
+    RedisConnectionBuilder::new(addr.to_string()).paired_connect().await
 }
+
+// TODO add doc comment
+pub async fn paired_reconnecting(addr: SocketAddr) -> Result<Reconnecting<RedisConnectionBuilder, PairedConnection>, error::Error> {
+    RedisConnectionBuilder::new(addr.to_string()).paired_reconnecting().await
+}
+
+// TODO add paired_connect_reconnecting?
 
 impl PairedConnection {
     /// Sends a command to Redis.
@@ -277,7 +273,7 @@ impl PairedConnection {
         }
 
         let (tx, rx) = oneshot::channel();
-        match self.out_tx_c.do_work((msg, tx)) {
+        match self.out_tx_c.unbounded_send((msg, tx)) {
             Ok(()) => future::Either::Left(async move {
                 match rx.await {
                     Ok(v) => Ok(T::from_resp(v)?),
@@ -286,7 +282,7 @@ impl PairedConnection {
                     )),
                 }
             }),
-            Err(e) => future::Either::Right(future::ready(Err(e))),
+            Err(e) => future::Either::Right(future::ready(Err(e.into()))),
         }
     }
 
@@ -298,6 +294,36 @@ impl PairedConnection {
             }
         };
         tokio::spawn(forget_f);
+    }
+}
+
+impl ComplexConnection for PairedConnection {
+    /// Creates paired connection by wrapping a primitive connection with pairing logic.
+    fn from_primitive(primitive: RespConnection, error_sender: tokio::sync::oneshot::Sender<()>) -> Self {
+        let (out_tx, out_rx) = mpsc::unbounded();
+        let paired_connection_inner = PairedConnectionInner::new(primitive, out_rx, error_sender);
+        tokio::spawn(paired_connection_inner);
+
+        Self {
+            out_tx_c: Arc::new(out_tx),
+        }
+    }
+}
+
+impl <B: ConnectionBuilder + Send + Sync + 'static> Reconnecting<B, PairedConnection> {
+    /// Sends message using the currently active connection.
+    /// This is a shorthand for `.current().await?.send`.
+    pub async fn send<T: resp::FromResp>(&self, msg: RespValue) -> Result<T, Error> {
+        let connection = self.current().await?;
+        connection.send(msg).await
+    }
+
+    /// Sends message using the currently active connection.
+    /// This is a shorthand for `.current().await?.send_and_forget`.
+    pub async fn send_and_forget(&self, msg: RespValue) {
+        if let Ok(connection) = self.current().await {
+            connection.send_and_forget(msg);
+        }
     }
 }
 

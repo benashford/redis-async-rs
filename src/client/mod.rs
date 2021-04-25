@@ -25,6 +25,7 @@ pub mod connect;
 pub mod paired;
 mod builder;
 pub mod pubsub;
+mod reconnect_new;
 
 pub use self::{
     builder::ConnectionBuilder,
