@@ -15,21 +15,21 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use futures_channel::{mpsc, oneshot};
+use futures_channel::{
+    mpsc::{self, TrySendError},
+    oneshot,
+};
 use futures_sink::Sink;
-use futures_util::{
-    future::TryFutureExt,
-    stream::{Fuse, Stream, StreamExt},
-};
+use futures_util::stream::{Fuse, Stream, StreamExt};
 
-use super::{
-    connect::{connect_with_auth, RespConnection},
-    ConnectionBuilder,
+use crate::client::{
+    builder::{redis::RedisConnectionBuilder, ConnectionBuilder},
+    connect::RespConnection,
+    reconnect::{ComplexConnection, Reconnecting},
 };
-
 use crate::{
     error::{self, ConnectionReason},
-    reconnect::{reconnect, Reconnect},
+    // reconnect::{reconnect, Reconnect},
     resp::{self, FromResp},
 };
 
@@ -63,10 +63,16 @@ struct PubsubConnectionInner {
     pending_psubs: BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
     /// Any incomplete messages to be sent...
     send_pending: Option<resp::RespValue>,
+    /// TODO add comment
+    error_sender: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl PubsubConnectionInner {
-    fn new(con: RespConnection, out_rx: mpsc::UnboundedReceiver<PubsubEvent>) -> Self {
+    fn new(
+        con: RespConnection,
+        out_rx: mpsc::UnboundedReceiver<PubsubEvent>,
+        error_sender: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
         PubsubConnectionInner {
             connection: con,
             out_rx: out_rx.fuse(),
@@ -75,6 +81,7 @@ impl PubsubConnectionInner {
             pending_subs: BTreeMap::new(),
             pending_psubs: BTreeMap::new(),
             send_pending: None,
+            error_sender: Some(error_sender),
         }
     }
 
@@ -338,57 +345,58 @@ impl Future for PubsubConnectionInner {
 /// A shareable reference to subscribe to PUBSUB topics
 #[derive(Debug, Clone)]
 pub struct PubsubConnection {
-    out_tx_c: Arc<Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>>,
+    out_tx_c: Arc<mpsc::UnboundedSender<PubsubEvent>>,
 }
 
-async fn inner_conn_fn(
-    addr: SocketAddr,
-    username: Option<Arc<str>>,
-    password: Option<Arc<str>>,
-) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
-    let username = username.as_ref().map(|u| u.as_ref());
-    let password = password.as_ref().map(|p| p.as_ref());
-
-    let connection = connect_with_auth(&addr, username, password).await?;
-    let (out_tx, out_rx) = mpsc::unbounded();
-    tokio::spawn(async {
-        match PubsubConnectionInner::new(connection, out_rx).await {
-            Ok(_) => (),
-            Err(e) => log::error!("Pub/Sub error: {:?}", e),
-        }
-    });
-    Ok(out_tx)
+pub trait PubSubConnectionBuilder: ConnectionBuilder + Sized {
+    fn pubsub_connect<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<PubsubConnection, error::Error>> + Send + 'a>>;
+    fn pubsub_reconnecting(
+        self,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Reconnecting<Self, PubsubConnection>, error::Error>> + Send>,
+    >;
 }
 
-impl ConnectionBuilder {
-    pub fn pubsub_connect(&self) -> impl Future<Output = Result<PubsubConnection, error::Error>> {
-        let addr = self.addr;
-        let username = self.username.clone();
-        let password = self.password.clone();
-
-        let reconnecting_f = reconnect(
-            |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
-                con.unbounded_send(act).map_err(|e| e.into())
-            },
-            move || {
-                let con_f = inner_conn_fn(addr, username.clone(), password.clone());
-                Box::pin(con_f)
-            },
-        );
-        reconnecting_f.map_ok(|con| PubsubConnection {
-            out_tx_c: Arc::new(con),
+impl<B: ConnectionBuilder> PubSubConnectionBuilder for B {
+    fn pubsub_connect<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<PubsubConnection, error::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let primitive = self.connect().await?;
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            Ok(PubsubConnection::from_primitive(primitive, tx))
         })
+    }
+    fn pubsub_reconnecting(
+        self,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Reconnecting<Self, PubsubConnection>, error::Error>> + Send>,
+    > {
+        Box::pin(async { Reconnecting::start(self).await })
     }
 }
 
 /// Used for Redis's PUBSUB functionality.
 ///
 /// Returns a future that resolves to a `PubsubConnection`. The future will only resolve once the
-/// connection is established; after the intial establishment, if the connection drops for any
-/// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
-/// any subscriptions will need to be re-subscribed.
+/// connection is established; after the initial establishment, if the connection drops for any
+/// reason (e.g. Redis server being restarted), the connection will **not** attempt re-connect.
+/// Check out pubsub_reconnecting if you're interested in auto-reconnect.
 pub async fn pubsub_connect(addr: SocketAddr) -> Result<PubsubConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.pubsub_connect().await
+    RedisConnectionBuilder::new(addr.to_string())
+        .pubsub_connect()
+        .await
+}
+
+// TODO add doc comment
+pub async fn pubsub_reconnecting(
+    addr: SocketAddr,
+) -> Result<Reconnecting<RedisConnectionBuilder, PubsubConnection>, error::Error> {
+    RedisConnectionBuilder::new(addr.to_string())
+        .pubsub_reconnecting()
+        .await
 }
 
 impl PubsubConnection {
@@ -406,7 +414,7 @@ impl PubsubConnection {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
         self.out_tx_c
-            .do_work(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))?;
+            .unbounded_send(PubsubEvent::Subscribe(topic.to_owned(), tx, signal_t))?;
 
         match signal_r.await {
             Ok(_) => Ok(PubsubStream {
@@ -422,7 +430,8 @@ impl PubsubConnection {
         let (tx, rx) = mpsc::unbounded();
         let (signal_t, signal_r) = oneshot::channel();
         self.out_tx_c
-            .do_work(PubsubEvent::Psubscribe(topic.to_owned(), tx, signal_t))?;
+            .unbounded_send(PubsubEvent::Psubscribe(topic.to_owned(), tx, signal_t))
+            .map_err(send_error_to_redis_error)?;
 
         match signal_r.await {
             Ok(_) => Ok(PubsubStream {
@@ -441,7 +450,7 @@ impl PubsubConnection {
         // anyway, and would be reported/logged elsewhere
         let _ = self
             .out_tx_c
-            .do_work(PubsubEvent::Unsubscribe(topic.into()));
+            .unbounded_send(PubsubEvent::Unsubscribe(topic.into()));
     }
 
     pub fn punsubscribe<T: Into<String>>(&self, topic: T) {
@@ -449,7 +458,30 @@ impl PubsubConnection {
         // anyway, and would be reported/logged elsewhere
         let _ = self
             .out_tx_c
-            .do_work(PubsubEvent::Punsubscribe(topic.into()));
+            .unbounded_send(PubsubEvent::Punsubscribe(topic.into()));
+    }
+}
+
+fn send_error_to_redis_error(e: TrySendError<PubsubEvent>) -> error::Error {
+    e.into()
+}
+
+impl ComplexConnection for PubsubConnection {
+    fn from_primitive(
+        primitive: RespConnection,
+        error_sender: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
+        let (out_tx, out_rx) = mpsc::unbounded();
+        tokio::spawn(async {
+            // TODO make sure this error triggers a reconnect
+            match PubsubConnectionInner::new(primitive, out_rx, error_sender).await {
+                Ok(_) => (),
+                Err(e) => log::error!("Pub/Sub error: {:?}", e),
+            }
+        });
+        Self {
+            out_tx_c: Arc::new(out_tx),
+        }
     }
 }
 
