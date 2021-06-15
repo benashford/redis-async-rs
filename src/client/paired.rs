@@ -166,7 +166,6 @@ impl PairedConnectionInner {
             ))));
         }
 
-        // TODO - this could be handled better, returning errors to waiting things, possibly.
         log::error!("Internal error in PairedConnectionInner: {}", e);
     }
 }
