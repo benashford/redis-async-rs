@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -56,7 +56,8 @@ enum ReceiveStatus {
     NotReady,
 }
 
-type Responder = oneshot::Sender<resp::RespValue>;
+type CommandResult = Result<resp::RespValue, error::Error>;
+type Responder = oneshot::Sender<CommandResult>;
 type SendPayload = (resp::RespValue, Responder);
 
 // /// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
@@ -76,7 +77,7 @@ struct PairedConnectionInner {
 impl PairedConnectionInner {
     fn new(
         con: RespConnection,
-        out_rx: mpsc::UnboundedReceiver<(resp::RespValue, oneshot::Sender<resp::RespValue>)>,
+        out_rx: mpsc::UnboundedReceiver<(resp::RespValue, Responder)>,
     ) -> Self {
         PairedConnectionInner {
             connection: con,
@@ -144,20 +145,27 @@ impl PairedConnectionInner {
         }
         match self.connection.poll_next_unpin(cx) {
             Poll::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
-            Poll::Ready(Some(msg)) => {
+            Poll::Ready(Some(Ok(msg))) => {
                 let tx = match self.waiting.pop_front() {
                     Some(tx) => tx,
                     None => panic!("Received unexpected message: {:?}", msg),
                 };
-                let _ = tx.send(msg?);
+                let _ = tx.send(Ok(msg));
                 Ok(ReceiveStatus::ReadyMore)
             }
+            Poll::Ready(Some(Err(e))) => Err(e),
             Poll::Pending => Ok(ReceiveStatus::NotReady),
         }
     }
 
-    fn handle_error(&self, e: &error::Error) {
-        // TODO - this could be handled better, returning errors to waiting things, possibly.
+    fn handle_error(&mut self, e: &error::Error) {
+        for tx in self.waiting.drain(..) {
+            let _ = tx.send(Err(error::internal(format!(
+                "Failed due to underlying failure: {}",
+                e
+            ))));
+        }
+
         log::error!("Internal error in PairedConnectionInner: {}", e);
     }
 }
@@ -280,7 +288,8 @@ impl PairedConnection {
         match self.out_tx_c.do_work((msg, tx)) {
             Ok(()) => future::Either::Left(async move {
                 match rx.await {
-                    Ok(v) => Ok(T::from_resp(v)?),
+                    Ok(Ok(v)) => Ok(T::from_resp(v)?),
+                    Ok(Err(e)) => Err(e),
                     Err(_) => Err(error::internal(
                         "Connection closed before response received",
                     )),

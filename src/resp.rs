@@ -234,7 +234,7 @@ impl FromResp for () {
         match resp {
             RespValue::SimpleString(string) => match string.as_ref() {
                 "OK" => Ok(()),
-                _ => Err(Error::RESP(
+                _ => Err(Error::Resp(
                     format!("Unexpected value within SimpleString: {}", string),
                     None,
                 )),
@@ -262,7 +262,7 @@ where
                         B::from_resp(ary_iter.next().expect("No value"))?,
                     ))
                 } else {
-                    Err(Error::RESP(
+                    Err(Error::Resp(
                         format!("Array needs to be 2 elements, is: {}", ary.len()),
                         None,
                     ))
@@ -293,7 +293,7 @@ where
                         C::from_resp(ary_iter.next().expect("No value"))?,
                     ))
                 } else {
-                    Err(Error::RESP(
+                    Err(Error::Resp(
                         format!("Array needs to be 3 elements, is: {}", ary.len()),
                         None,
                     ))
@@ -360,70 +360,70 @@ macro_rules! into_resp {
 }
 
 /// A specific trait to convert into a `RespValue::BulkString`
-pub trait ToRespString {
-    fn to_resp_string(self) -> RespValue;
+pub trait IntoRespString {
+    fn into_resp_string(self) -> RespValue;
 }
 
 macro_rules! string_into_resp {
     ($t:ty) => {
-        into_resp!($t, to_resp_string);
+        into_resp!($t, into_resp_string);
     };
 }
 
-impl ToRespString for String {
-    fn to_resp_string(self) -> RespValue {
+impl IntoRespString for String {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.into_bytes())
     }
 }
 string_into_resp!(String);
 
-impl<'a> ToRespString for &'a String {
-    fn to_resp_string(self) -> RespValue {
+impl<'a> IntoRespString for &'a String {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
 string_into_resp!(&'a String);
 
-impl<'a> ToRespString for &'a str {
-    fn to_resp_string(self) -> RespValue {
+impl<'a> IntoRespString for &'a str {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
 string_into_resp!(&'a str);
 
-impl<'a> ToRespString for &'a [u8] {
-    fn to_resp_string(self) -> RespValue {
+impl<'a> IntoRespString for &'a [u8] {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.to_vec())
     }
 }
 string_into_resp!(&'a [u8]);
 
-impl ToRespString for Vec<u8> {
-    fn to_resp_string(self) -> RespValue {
+impl IntoRespString for Vec<u8> {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self)
     }
 }
 string_into_resp!(Vec<u8>);
 
-impl ToRespString for Arc<str> {
-    fn to_resp_string(self) -> RespValue {
+impl IntoRespString for Arc<str> {
+    fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
 }
 string_into_resp!(Arc<str>);
 
-pub trait ToRespInteger {
-    fn to_resp_integer(self) -> RespValue;
+pub trait IntoRespInteger {
+    fn into_resp_integer(self) -> RespValue;
 }
 
 macro_rules! integer_into_resp {
     ($t:ty) => {
-        into_resp!($t, to_resp_integer);
+        into_resp!($t, into_resp_integer);
     };
 }
 
-impl ToRespInteger for usize {
-    fn to_resp_integer(self) -> RespValue {
+impl IntoRespInteger for usize {
+    fn into_resp_integer(self) -> RespValue {
         RespValue::Integer(self as i64)
     }
 }
@@ -501,7 +501,7 @@ impl Encoder<RespValue> for RespCodec {
 
 #[inline]
 fn parse_error(message: String) -> Error {
-    Error::RESP(message, None)
+    Error::Resp(message, None)
 }
 
 /// Many RESP types have their length (which is either bytes or "number of elements", depending on context)
@@ -633,7 +633,7 @@ fn decode_integer(buf: &mut BytesMut, idx: usize) -> DecodeResult {
 }
 
 /// A simple string is any series of bytes that ends with `\r\n`
-#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
@@ -641,7 +641,7 @@ fn decode_simple_string(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     }
 }
 
-#[allow(clippy::unknown_clippy_lints, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn decode_error(buf: &mut BytesMut, idx: usize) -> DecodeResult {
     match scan_string(buf, idx) {
         None => Ok(None),
@@ -808,7 +808,7 @@ mod tests {
         let res = HashMap::<String, String>::from_resp(resp_object);
 
         match res {
-            Err(Error::RESP(_, _)) => {}
+            Err(Error::Resp(_, _)) => {}
             _ => panic!("Should not be able to convert an odd number of elements to a hashmap"),
         }
     }

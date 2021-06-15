@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2019 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -25,7 +25,7 @@ pub enum Error {
     IO(io::Error),
 
     /// A RESP parsing/serialising error occurred
-    RESP(String, Option<resp::RespValue>),
+    Resp(String, Option<resp::RespValue>),
 
     /// A remote error
     Remote(String),
@@ -52,7 +52,7 @@ pub(crate) fn unexpected(msg: impl Into<String>) -> Error {
 }
 
 pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
-    Error::RESP(msg.into(), Some(resp))
+    Error::Resp(msg.into(), Some(resp))
 }
 
 impl From<io::Error> for Error {
@@ -81,7 +81,7 @@ impl fmt::Display for Error {
         match self {
             Error::Internal(s) => write!(f, "{}", s),
             Error::IO(err) => write!(f, "{}", err),
-            Error::RESP(s, resp) => write!(f, "{}: {:?}", s, resp),
+            Error::Resp(s, resp) => write!(f, "{}: {:?}", s, resp),
             Error::Remote(s) => write!(f, "{}", s),
             Error::Connection(ConnectionReason::Connected) => {
                 write!(f, "Connection already established")
