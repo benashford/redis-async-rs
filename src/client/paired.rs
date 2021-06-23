@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::mem;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -18,10 +19,7 @@ use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
-use futures_util::{
-    future::{self, TryFutureExt},
-    stream::StreamExt,
-};
+use futures_util::{future::TryFutureExt, stream::StreamExt};
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -271,31 +269,21 @@ impl PairedConnection {
     /// Behind the scenes the message is queued up and sent to Redis asynchronously before the
     /// future is realised.  As such, it is guaranteed that messages are sent in the same order
     /// that `send` is called.
-    pub fn send<T>(&self, msg: resp::RespValue) -> impl Future<Output = Result<T, error::Error>>
+    pub fn send<T>(&self, msg: resp::RespValue) -> SendFuture<T>
     where
-        T: resp::FromResp,
+        T: resp::FromResp + Unpin,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
             _ => {
-                return future::Either::Right(future::ready(Err(error::internal(
-                    "Command must be a RespValue::Array",
-                ))));
+                return SendFuture::new(error::internal("Command must be a RespValue::Array"));
             }
         }
 
         let (tx, rx) = oneshot::channel();
         match self.out_tx_c.do_work((msg, tx)) {
-            Ok(()) => future::Either::Left(async move {
-                match rx.await {
-                    Ok(Ok(v)) => Ok(T::from_resp(v)?),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(error::internal(
-                        "Connection closed before response received",
-                    )),
-                }
-            }),
-            Err(e) => future::Either::Right(future::ready(Err(e))),
+            Ok(()) => SendFuture::new(rx),
+            Err(e) => SendFuture::new(e),
         }
     }
 
@@ -307,6 +295,61 @@ impl PairedConnection {
             }
         };
         tokio::spawn(forget_f);
+    }
+}
+
+enum SendFutureType {
+    Wait(oneshot::Receiver<Result<resp::RespValue, error::Error>>),
+    Error(Option<error::Error>),
+}
+
+impl From<oneshot::Receiver<Result<resp::RespValue, error::Error>>> for SendFutureType {
+    fn from(from: oneshot::Receiver<Result<resp::RespValue, error::Error>>) -> Self {
+        Self::Wait(from)
+    }
+}
+
+impl From<error::Error> for SendFutureType {
+    fn from(e: error::Error) -> Self {
+        Self::Error(Some(e))
+    }
+}
+
+pub struct SendFuture<T> {
+    send_type: SendFutureType,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> SendFuture<T> {
+    fn new(send_type: impl Into<SendFutureType>) -> Self {
+        Self {
+            send_type: send_type.into(),
+            _phantom: Default::default(),
+        }
+    }
+}
+
+impl<T> Future for SendFuture<T>
+where
+    T: resp::FromResp + Unpin,
+{
+    type Output = Result<T, error::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut().send_type {
+            SendFutureType::Error(ref mut e) => match e.take() {
+                Some(e) => Poll::Ready(Err(e)),
+                None => panic!("Future polled several times after completion"),
+            },
+            SendFutureType::Wait(ref mut rx) => match Pin::new(rx).poll(cx) {
+                Poll::Ready(Ok(Ok(v))) => Poll::Ready(T::from_resp(v)),
+                Poll::Ready(Ok(Err(e))) => Poll::Ready(Err(e)),
+                Poll::Ready(Err(_)) => Poll::Ready(Err(error::internal(
+                    "Connection closed before response received",
+                ))),
+                Poll::Pending => Poll::Pending,
+            },
+        }
     }
 }
 
