@@ -189,14 +189,10 @@ impl PubsubConnectionInner {
                         return Ok(false);
                     } else {
                         // This can only happen if the connection is closed server-side
-                        for sub in self.subscriptions.values() {
+                        let subs = self.subscriptions.values();
+                        let psubs = self.psubscriptions.values();
+                        for sub in subs.chain(psubs) {
                             sub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
-                        for psub in self.psubscriptions.values() {
-                            psub.unbounded_send(Err(error::Error::Connection(
                                 ConnectionReason::NotConnected,
                             )))
                             .unwrap();
@@ -211,15 +207,10 @@ impl PubsubConnectionInner {
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    for sub in self.subscriptions.values() {
+                    let subs = self.subscriptions.values();
+                    let psubs = self.psubscriptions.values();
+                    for sub in subs.chain(psubs) {
                         sub.unbounded_send(Err(error::unexpected(format!(
-                            "Connection is in the process of failing due to: {}",
-                            e
-                        ))))
-                        .unwrap();
-                    }
-                    for psub in self.psubscriptions.values() {
-                        psub.unbounded_send(Err(error::unexpected(format!(
                             "Connection is in the process of failing due to: {}",
                             e
                         ))))
