@@ -139,15 +139,10 @@ impl PubsubConnectionInner {
                 messages.pop(),
                 messages.pop(),
             ) {
-                (Some(msg), Some(topic), Some(message_type), None) => {
-                    match (msg, String::from_resp(topic), message_type) {
-                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
-                        _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
-                    }
-                }
-                (Some(msg), Some(_), Some(topic), Some(message_type)) => {
-                    match (msg, String::from_resp(topic), message_type) {
-                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
+                (Some(msg), Some(topic), Some(message_type), None)
+                | (Some(msg), Some(_), Some(topic), Some(message_type)) => {
+                    match (String::from_resp(topic), message_type) {
+                        (Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
                     }
                 }
