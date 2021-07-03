@@ -237,20 +237,14 @@ fn process_subscribe(
     subscriptions: &mut BTreeMap<String, PubsubSink>,
     topic: String,
 ) -> Result<bool, error::Error> {
-    match pending_subs.remove(&topic) {
-        Some((sender, signal)) => {
-            subscriptions.insert(topic, sender);
-            signal
-                .send(())
-                .map_err(|()| error::internal("Error confirming subscription"))?
-        }
-        None => {
-            return Err(error::internal(format!(
-                "Received unexpected subscribe notification for topic: {}",
-                topic
-            )));
-        }
-    };
+    let (sender, signal) = pending_subs.remove(&topic).ok_or(error::internal(format!(
+        "Received unexpected subscribe notification for topic: {}",
+        topic
+    )))?;
+    subscriptions.insert(topic, sender);
+    signal
+        .send(())
+        .map_err(|()| error::internal("Error confirming subscription"))?;
     Ok(true)
 }
 
