@@ -131,7 +131,7 @@ impl PubsubConnectionInner {
         }
     }
 
-    fn handle_message(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
+    fn handle_message(&mut self, msg: resp::RespValue) -> Result<(), error::Error> {
         let (message_type, topic, msg) = match msg {
             resp::RespValue::Array(mut messages) => match (
                 messages.pop(),
@@ -205,9 +205,6 @@ impl PubsubConnectionInner {
                         )));
                     }
                 }
-                if self.subscriptions.is_empty() {
-                    return Ok(false);
-                }
             }
             b"punsubscribe" => {
                 match self.psubscriptions.entry(topic) {
@@ -220,9 +217,6 @@ impl PubsubConnectionInner {
                             vacant.key()
                         )));
                     }
-                }
-                if self.psubscriptions.is_empty() {
-                    return Ok(false);
                 }
             }
             b"message" => match self.subscriptions.get(&topic) {
@@ -263,39 +257,32 @@ impl PubsubConnectionInner {
             }
         }
 
-        Ok(true)
+        Ok(())
     }
 
     /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
-    fn handle_messages(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
+    fn handle_messages(&mut self, cx: &mut Context) -> Result<(), error::Error> {
         loop {
             match self.connection.poll_next_unpin(cx) {
-                Poll::Pending => return Ok(true),
+                Poll::Pending => return Ok(()),
                 Poll::Ready(None) => {
-                    if self.subscriptions.is_empty() {
-                        return Ok(false);
-                    } else {
-                        // This can only happen if the connection is closed server-side
-                        for sub in self.subscriptions.values() {
-                            sub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
-                        for psub in self.psubscriptions.values() {
-                            psub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
-                        return Err(error::Error::Connection(ConnectionReason::NotConnected));
+                    // This can only happen if the connection is closed server-side
+                    for sub in self.subscriptions.values() {
+                        sub.unbounded_send(Err(error::Error::Connection(
+                            ConnectionReason::NotConnected,
+                        )))
+                        .unwrap();
                     }
+                    for psub in self.psubscriptions.values() {
+                        psub.unbounded_send(Err(error::Error::Connection(
+                            ConnectionReason::NotConnected,
+                        )))
+                        .unwrap();
+                    }
+                    return Err(error::Error::Connection(ConnectionReason::NotConnected));
                 }
                 Poll::Ready(Some(Ok(message))) => {
-                    let message_result = self.handle_message(message)?;
-                    if !message_result {
-                        return Ok(false);
-                    }
+                    self.handle_message(message)?;
                 }
                 Poll::Ready(Some(Err(e))) => {
                     for sub in self.subscriptions.values() {
@@ -326,11 +313,11 @@ impl Future for PubsubConnectionInner {
         let this_self = self.get_mut();
         this_self.handle_new_subs(cx)?;
         this_self.do_flush(cx)?;
-        let cont = this_self.handle_messages(cx)?;
-        if cont {
-            Poll::Pending
-        } else {
+        this_self.handle_messages(cx)?;
+        if this_self.out_rx.is_done() {
             Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
         }
     }
 }
