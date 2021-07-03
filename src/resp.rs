@@ -207,22 +207,23 @@ impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp fo
     fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T, S>, Error> {
         match resp {
             RespValue::Array(ary) => {
-                let mut map = HashMap::with_capacity_and_hasher(ary.len(), S::default());
-                let mut items = ary.into_iter();
-
-                while let Some(k) = items.next() {
-                    let key = K::from_resp(k)?;
-                    let value = T::from_resp(items.next().ok_or_else(|| {
-                        error::resp(
+                let len = ary.len();
+                if len % 2 != 0 {
+                    return Err(error::resp(
                             "Cannot convert an odd number of elements into a hashmap",
-                            "".into(),
-                        )
-                    })?)?;
-
-                    map.insert(key, value);
+                        RespValue::Array(ary),
+                    ));
                 }
 
-                Ok(map)
+                let mut items = ary.into_iter();
+                (0..(len / 2))
+                    .map(|_| {
+                        // It's safe to unwrap, because we checked the length before
+                        let key = K::from_resp(items.next().unwrap())?;
+                        let value = T::from_resp(items.next().unwrap())?;
+                        Ok((key, value))
+                    })
+                    .collect()
             }
             _ => Err(error::resp("Cannot be converted into a hashmap", resp)),
         }
