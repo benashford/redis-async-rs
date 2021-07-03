@@ -85,7 +85,7 @@ impl RespValue {
     }
 }
 
-/// A trait to be implemented for every time which can be read from a RESP value.
+/// A trait to be implemented for every type which can be read from a RESP value.
 ///
 /// Implementing this trait on a type means that type becomes a valid return type for calls such as `send` on
 /// `client::PairedConnection`
