@@ -264,22 +264,16 @@ fn process_message(
     topic: &str,
     msg: resp::RespValue,
 ) -> Result<bool, error::Error> {
-    match subscriptions.get(topic) {
-        Some(sender) => {
-            if let Err(error) = sender.unbounded_send(Ok(msg)) {
-                if !error.is_disconnected() {
-                    return Err(error::internal(format!("Cannot send message: {}", error)));
-                }
-            }
+    let sender = subscriptions.get(topic).ok_or(error::internal(format!(
+        "Unexpected message on topic: {}",
+        topic
+    )))?;
+    match sender.unbounded_send(Ok(msg)) {
+        Err(error) if !error.is_disconnected() => {
+            Err(error::internal(format!("Cannot send message: {}", error)))
         }
-        None => {
-            return Err(error::internal(format!(
-                "Unexpected message on topic: {}",
-                topic
-            )));
-        }
-    };
-    Ok(true)
+        _ => Ok(true),
+    }
 }
 
 impl Future for PubsubConnectionInner {
