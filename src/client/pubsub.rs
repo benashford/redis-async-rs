@@ -8,7 +8,7 @@
  * except according to those terms.
  */
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -166,8 +166,8 @@ impl PubsubConnectionInner {
             b"psubscribe" => {
                 process_subscribe(&mut self.pending_psubs, &mut self.psubscriptions, topic)
             }
-            b"unsubscribe" => process_unsubscribe(&mut self.subscriptions, topic),
-            b"punsubscribe" => process_unsubscribe(&mut self.psubscriptions, topic),
+            b"unsubscribe" => process_unsubscribe(&mut self.subscriptions, &topic),
+            b"punsubscribe" => process_unsubscribe(&mut self.psubscriptions, &topic),
             b"message" => process_message(&self.subscriptions, &topic, msg),
             b"pmessage" => process_message(&self.psubscriptions, &topic, msg),
             t => {
@@ -250,23 +250,13 @@ fn process_subscribe(
 
 fn process_unsubscribe(
     subscriptions: &mut BTreeMap<String, PubsubSink>,
-    topic: String,
+    topic: &str,
 ) -> Result<bool, error::Error> {
-    match subscriptions.entry(topic) {
-        Entry::Occupied(entry) => {
-            entry.remove_entry();
-        }
-        Entry::Vacant(vacant) => {
-            return Err(error::internal(format!(
-                "Unexpected unsubscribe message: {}",
-                vacant.key()
-            )));
-        }
-    }
-    if subscriptions.is_empty() {
-        return Ok(false);
-    }
-    Ok(true)
+    subscriptions.remove(topic).ok_or(error::internal(format!(
+        "Unexpected unsubscribe message: {}",
+        topic
+    )))?;
+    Ok(!subscriptions.is_empty())
 }
 
 fn process_message(
