@@ -193,32 +193,28 @@ impl PubsubConnectionInner {
                     )));
                 }
             },
-            b"unsubscribe" => {
-                match self.subscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
+            b"unsubscribe" => match self.subscriptions.entry(topic) {
+                Entry::Occupied(entry) => {
+                    entry.remove_entry();
                 }
-            }
-            b"punsubscribe" => {
-                match self.psubscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
+                Entry::Vacant(vacant) => {
+                    return Err(error::internal(format!(
+                        "Unexpected unsubscribe message: {}",
+                        vacant.key()
+                    )));
                 }
-            }
+            },
+            b"punsubscribe" => match self.psubscriptions.entry(topic) {
+                Entry::Occupied(entry) => {
+                    entry.remove_entry();
+                }
+                Entry::Vacant(vacant) => {
+                    return Err(error::internal(format!(
+                        "Unexpected unsubscribe message: {}",
+                        vacant.key()
+                    )));
+                }
+            },
             b"message" => match self.subscriptions.get(&topic) {
                 Some(sender) => {
                     if let Err(error) = sender.unbounded_send(Ok(msg)) {
@@ -531,6 +527,7 @@ mod test {
     }
 
     #[tokio::test]
+    /// Regression test for https://github.com/benashford/redis-async-rs/issues/50
     async fn test_connection_remains_open_after_unsubscription() {
         let addr = "127.0.0.1:6379".parse().unwrap();
         let pubsub = super::pubsub_connect(addr)
