@@ -527,4 +527,40 @@ mod test {
         assert_eq!(result[1], "test-message-2".into());
         assert_eq!(result[2], "test-message-3".into());
     }
+
+    #[tokio::test]
+    async fn test_connection_remains_open_after_unsubscription() {
+        let addr = "127.0.0.1:6379".parse().unwrap();
+        let pubsub = super::pubsub_connect(addr)
+            .await
+            .expect("Cannot connect to Redis");
+
+        let topic_messages = pubsub
+            .subscribe("test-topic")
+            .await
+            .expect("Cannot subscribe to topic");
+        drop(topic_messages);
+
+        pubsub
+            .subscribe("test-topic")
+            .await
+            .expect("Cannot subscribe to topic");
+    }
+}
+
+#[tokio::test]
+async fn test_connection_is_closed_after_channel_is_dropped() {
+    let addr = "127.0.0.1:6379".parse().unwrap();
+    let connection = connect_with_auth(&addr, None, None)
+        .await
+        .expect("Cannot connect to Redis");
+    let (out_tx, out_rx) = mpsc::unbounded();
+    let handle = tokio::spawn(async {
+        match PubsubConnectionInner::new(connection, out_rx).await {
+            Ok(_) => (),
+            Err(e) => log::error!("Pub/Sub error: {:?}", e),
+        }
+    });
+    drop(out_tx);
+    handle.await.expect("Complete");
 }
