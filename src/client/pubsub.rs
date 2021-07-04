@@ -443,6 +443,8 @@ impl PubsubConnection {
 pub struct PubsubStream {
     topic: String,
     underlying: PubsubStreamInner,
+    // Note that, to keep the Future running, PubsubConnectionInner relies on PubsubStream to hold
+    // a reference to the connection. If that's ever changed remember to adapt the readiness check.
     con: PubsubConnection,
 }
 
