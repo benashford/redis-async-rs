@@ -564,5 +564,5 @@ async fn test_connection_is_closed_after_channel_is_dropped() {
         }
     });
     drop(out_tx);
-    handle.await.expect("Complete");
+    handle.await.expect("Error waiting on the JoinHandle");
 }
