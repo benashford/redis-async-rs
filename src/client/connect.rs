@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,11 +8,9 @@
  * except according to those terms.
  */
 
-use std::net::SocketAddr;
-
 use futures_util::{SinkExt, StreamExt};
 
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio_util::codec::{Decoder, Framed};
 
 use crate::{error, resp};
@@ -34,13 +32,13 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub async fn connect(addr: &SocketAddr) -> Result<RespConnection, error::Error> {
+pub async fn connect(addr: impl ToSocketAddrs) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect(addr).await?;
     Ok(resp::RespCodec.framed(tcp_stream))
 }
 
 pub async fn connect_with_auth(
-    addr: &SocketAddr,
+    addr: impl ToSocketAddrs,
     username: Option<&str>,
     password: Option<&str>,
 ) -> Result<RespConnection, error::Error> {
@@ -84,9 +82,9 @@ mod test {
 
     #[tokio::test]
     async fn can_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
 
-        let mut connection = super::connect(&addr).await.expect("Cannot connect");
+        let mut connection = super::connect(addr).await.expect("Cannot connect");
         connection
             .send(resp_array!["PING", "TEST"])
             .await
@@ -103,9 +101,9 @@ mod test {
 
     #[tokio::test]
     async fn complex_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
 
-        let mut connection = super::connect(&addr).await.expect("Cannot connect");
+        let mut connection = super::connect(addr).await.expect("Cannot connect");
         let mut ops = Vec::new();
         ops.push(resp_array!["FLUSH"]);
         ops.extend((0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]));

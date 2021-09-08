@@ -26,9 +26,7 @@ async fn main() {
     let topic = env::args().nth(1).unwrap_or_else(|| "test.*".to_string());
     let addr = env::args()
         .nth(2)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string())
-        .parse()
-        .unwrap();
+        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
 
     let pubsub_con = client::pubsub_connect(addr)
         .await
