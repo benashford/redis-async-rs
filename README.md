@@ -24,7 +24,7 @@ Version 0.8 contains minor refactoring with an obvious upgrade path.
 
 ### Tokio compatibility
 
-Version 0.8 supports both Tokio 0.3 and Tokio 0.2 (because many other libraries are Tokio 0.2 only still). Tokio 0.3 is the default. To enable Tokio 0.2: disable default features and enable `tokio02`.
+Tokio 1.0 is the default. Backward compatibility for Tokio 0.2 is available by disabling default features and enabling `tokio02`.
 
 ## Other clients
 
@@ -116,7 +116,6 @@ I've removed the benchmarks from this project, as the examples were all out-of-d
 ## Next steps
 
 - Better documentation
-- Support for `PSUBSCRIBE` as well as `SUBSCRIBE`
 - Test all Redis commands
 - Decide on best way of supporting [Redis transactions](https://redis.io/topics/transactions)
 - Decide on best way of supporting blocking Redis commands

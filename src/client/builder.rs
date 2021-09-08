@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Ben Ashford
+ * Copyright 2020-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,7 +8,6 @@
  * except according to those terms.
  */
 
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use crate::error;
@@ -16,20 +15,15 @@ use crate::error;
 #[derive(Debug)]
 /// Connection builder
 pub struct ConnectionBuilder {
-    pub(crate) addr: SocketAddr,
+    pub(crate) addr: String,
     pub(crate) username: Option<Arc<str>>,
     pub(crate) password: Option<Arc<str>>,
 }
 
 impl ConnectionBuilder {
-    pub fn new<A: ToSocketAddrs>(addr: A) -> Result<Self, error::Error> {
+    pub fn new(addr: impl Into<String>) -> Result<Self, error::Error> {
         Ok(Self {
-            addr: addr
-                .to_socket_addrs()?
-                .next()
-                .ok_or(error::Error::Connection(
-                    error::ConnectionReason::ConnectionFailed,
-                ))?,
+            addr: addr.into(),
             username: None,
             password: None,
         })

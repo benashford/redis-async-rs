@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2020 Ben Ashford
+ * Copyright 2017-2021 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,7 +10,6 @@
 
 use std::collections::{btree_map::Entry, BTreeMap};
 use std::future::Future;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -21,6 +20,8 @@ use futures_util::{
     future::TryFutureExt,
     stream::{Fuse, Stream, StreamExt},
 };
+
+use tokio::net::ToSocketAddrs;
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -342,7 +343,7 @@ pub struct PubsubConnection {
 }
 
 async fn inner_conn_fn(
-    addr: SocketAddr,
+    addr: impl ToSocketAddrs,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
@@ -362,7 +363,7 @@ async fn inner_conn_fn(
 
 impl ConnectionBuilder {
     pub fn pubsub_connect(&self) -> impl Future<Output = Result<PubsubConnection, error::Error>> {
-        let addr = self.addr;
+        let addr = self.addr.clone();
         let username = self.username.clone();
         let password = self.password.clone();
 
@@ -371,7 +372,7 @@ impl ConnectionBuilder {
                 con.unbounded_send(act).map_err(|e| e.into())
             },
             move || {
-                let con_f = inner_conn_fn(addr, username.clone(), password.clone());
+                let con_f = inner_conn_fn(addr.clone(), username.clone(), password.clone());
                 Box::pin(con_f)
             },
         );
@@ -387,7 +388,7 @@ impl ConnectionBuilder {
 /// connection is established; after the intial establishment, if the connection drops for any
 /// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
 /// any subscriptions will need to be re-subscribed.
-pub async fn pubsub_connect(addr: SocketAddr) -> Result<PubsubConnection, error::Error> {
+pub async fn pubsub_connect(addr: impl Into<String>) -> Result<PubsubConnection, error::Error> {
     ConnectionBuilder::new(addr)?.pubsub_connect().await
 }
 
@@ -482,7 +483,7 @@ mod test {
 
     #[tokio::test]
     async fn subscribe_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
         let paired_c = client::paired_connect(addr);
         let pubsub_c = super::pubsub_connect(addr);
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
@@ -512,7 +513,7 @@ mod test {
 
     #[tokio::test]
     async fn psubscribe_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
         let paired_c = client::paired_connect(addr);
         let pubsub_c = super::pubsub_connect(addr);
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");

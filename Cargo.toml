@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.11.0"
+version = "0.12.0"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -22,7 +22,7 @@ tokio-util_03 = { package = "tokio-util", version = "0.3", features = ["codec"],
 tokio-util_06 = { package = "tokio-util", version = "0.6", features = ["codec"], optional = true }
 
 [dev-dependencies]
-env_logger = "^0.8.1"
+env_logger = "^0.9"
 futures = "^0.3.7"
 tokio_02 = { package = "tokio", version = "0.2", features = ["full"] }
 tokio_10 = { package = "tokio", version = "1.0", features = ["full"] }

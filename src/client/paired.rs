@@ -12,7 +12,6 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::mem;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -20,6 +19,8 @@ use std::task::{Context, Poll};
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{future::TryFutureExt, stream::StreamExt};
+
+use tokio::net::ToSocketAddrs;
 
 use super::{
     connect::{connect_with_auth, RespConnection},
@@ -206,7 +207,7 @@ pub struct PairedConnection {
 }
 
 async fn inner_conn_fn(
-    addr: SocketAddr,
+    addr: impl ToSocketAddrs,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
@@ -221,7 +222,7 @@ async fn inner_conn_fn(
 
 impl ConnectionBuilder {
     pub fn paired_connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
-        let addr = self.addr;
+        let addr = self.addr.clone();
         let username = self.username.clone();
         let password = self.password.clone();
 
@@ -230,7 +231,7 @@ impl ConnectionBuilder {
         };
 
         let conn_fn = move || {
-            let con_f = inner_conn_fn(addr, username.clone(), password.clone());
+            let con_f = inner_conn_fn(addr.clone(), username.clone(), password.clone());
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };
 
@@ -252,7 +253,7 @@ impl ConnectionBuilder {
 /// the client's responsibility to retry commands as applicable. Also, at least one command needs
 /// to be tried against the connection to trigger the re-connection attempt; this means at least
 /// one command will definitely fail in a disconnect/reconnect scenario.
-pub async fn paired_connect(addr: SocketAddr) -> Result<PairedConnection, error::Error> {
+pub async fn paired_connect(addr: impl Into<String>) -> Result<PairedConnection, error::Error> {
     ConnectionBuilder::new(addr)?.paired_connect().await
 }
 
@@ -359,7 +360,7 @@ mod test {
 
     #[tokio::test]
     async fn can_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
 
         let connection = super::paired_connect(addr)
             .await
@@ -378,8 +379,7 @@ mod test {
 
     #[tokio::test]
     async fn complex_paired_connect() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
-
+        let addr = "127.0.0.1:6379";
         let connection = super::paired_connect(addr)
             .await
             .expect("Cannot establish connection");
@@ -398,7 +398,7 @@ mod test {
 
     #[tokio::test]
     async fn sending_a_lot_of_data_test() {
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let addr = "127.0.0.1:6379";
 
         let connection = super::paired_connect(addr)
             .await
