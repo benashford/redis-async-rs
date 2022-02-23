@@ -116,6 +116,15 @@ impl FromResp for String {
     }
 }
 
+impl FromResp for Arc<str> {
+    fn from_resp_int(resp: RespValue) -> Result<Arc<str>, Error> {
+        match resp {
+            RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into()),
+            _ => Err(error::resp("Cannot convert into a Arc<str>", resp)),
+        }
+    }
+}
+
 impl FromResp for Vec<u8> {
     fn from_resp_int(resp: RespValue) -> Result<Vec<u8>, Error> {
         match resp {
