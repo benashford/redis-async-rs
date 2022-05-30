@@ -8,12 +8,6 @@
  * except according to those terms.
  */
 
-#[cfg(feature = "tokio02")]
-extern crate tokio_02 as tokio;
-
-#[cfg(feature = "tokio10")]
-extern crate tokio_10 as tokio;
-
 use std::env;
 
 use futures_util::future;
