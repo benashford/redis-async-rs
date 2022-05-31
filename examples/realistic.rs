@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2022 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,12 +7,6 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
-
-#[cfg(feature = "tokio02")]
-extern crate tokio_02 as tokio;
-
-#[cfg(feature = "tokio10")]
-extern crate tokio_10 as tokio;
 
 use std::env;
 
@@ -27,7 +21,6 @@ use redis_async::{client, resp_array};
 async fn main() {
     // Create some completely arbitrary "test data"
     let test_data_size = 10;
-    let test_data: Vec<_> = (0..test_data_size).map(|x| (x, x.to_string())).collect();
 
     let addr = env::args()
         .nth(1)
@@ -37,7 +30,7 @@ async fn main() {
         .await
         .expect("Cannot open connection");
 
-    let futures = test_data.into_iter().map(|data| {
+    let futures = (0..test_data_size).map(|x| (x, x.to_string())).map(|data| {
         let connection_inner = connection.clone();
         let incr_f = connection.send(resp_array!["INCR", "realistic_test_ctr"]);
         async move {

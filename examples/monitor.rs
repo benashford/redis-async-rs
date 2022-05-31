@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2022 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,12 +7,6 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
-
-#[cfg(feature = "tokio02")]
-extern crate tokio_02 as tokio;
-
-#[cfg(feature = "tokio10")]
-extern crate tokio_10 as tokio;
 
 use std::env;
 
