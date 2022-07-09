@@ -22,10 +22,6 @@ In summary: a `PairedConnection` or `PubsubConnection` will remain valid and wil
 
 Version 0.8 contains minor refactoring with an obvious upgrade path.
 
-### Tokio compatibility
-
-Tokio 1.0 is the default. Backward compatibility for Tokio 0.2 is available by disabling default features and enabling `tokio02`.
-
 ## Other clients
 
 When starting this library there weren't any other Redis clients that used Tokio. However the current situation is more competitive:
