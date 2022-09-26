@@ -41,6 +41,9 @@ pub enum Error {
     /// If any error is propagated this way that needs to be handled, then it should be made into
     /// a proper option.
     Unexpected(String),
+    
+    #[cfg(feature = "tls")]
+    InvalidDnsName
 }
 
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
@@ -92,6 +95,10 @@ impl fmt::Display for Error {
             }
             Error::Connection(ConnectionReason::NotConnected) => {
                 write!(f, "Connection has been closed")
+            }
+            #[cfg(feature = "tls")]
+            Error::InvalidDnsName => {
+                write!(f, "Invalid dns name")
             }
             Error::Unexpected(err) => write!(f, "{}", err),
         }
