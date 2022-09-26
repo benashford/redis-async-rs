@@ -20,8 +20,6 @@ use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::{future::TryFutureExt, stream::StreamExt};
 
-use tokio::net::ToSocketAddrs;
-
 use super::{
     connect::{connect_with_auth, RespConnection},
     ConnectionBuilder,
@@ -207,13 +205,14 @@ pub struct PairedConnection {
 }
 
 async fn inner_conn_fn(
-    addr: impl ToSocketAddrs,
+    host: String,
+    port: u16,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
-    let connection = connect_with_auth(&addr, username, password).await?;
+    let connection = connect_with_auth(&host, port, username, password).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
@@ -222,7 +221,8 @@ async fn inner_conn_fn(
 
 impl ConnectionBuilder {
     pub fn paired_connect(&self) -> impl Future<Output = Result<PairedConnection, error::Error>> {
-        let addr = self.addr.clone();
+        let host = self.host.clone();
+        let port = self.port;
         let username = self.username.clone();
         let password = self.password.clone();
 
@@ -231,7 +231,7 @@ impl ConnectionBuilder {
         };
 
         let conn_fn = move || {
-            let con_f = inner_conn_fn(addr.clone(), username.clone(), password.clone());
+            let con_f = inner_conn_fn(host.clone(), port, username.clone(), password.clone());
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };
 
@@ -253,8 +253,11 @@ impl ConnectionBuilder {
 /// the client's responsibility to retry commands as applicable. Also, at least one command needs
 /// to be tried against the connection to trigger the re-connection attempt; this means at least
 /// one command will definitely fail in a disconnect/reconnect scenario.
-pub async fn paired_connect(addr: impl Into<String>) -> Result<PairedConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.paired_connect().await
+pub async fn paired_connect(
+    host: impl Into<String>,
+    port: u16,
+) -> Result<PairedConnection, error::Error> {
+    ConnectionBuilder::new(host, port)?.paired_connect().await
 }
 
 impl PairedConnection {
@@ -354,15 +357,14 @@ where
     }
 }
 
+#[cfg(not(feature = "tls"))]
 #[cfg(test)]
 mod test {
     use super::ConnectionBuilder;
 
     #[tokio::test]
     async fn can_paired_connect() {
-        let addr = "127.0.0.1:6379";
-
-        let connection = super::paired_connect(addr)
+        let connection = super::paired_connect("127.0.0.1", 6379)
             .await
             .expect("Cannot establish connection");
 
@@ -379,8 +381,7 @@ mod test {
 
     #[tokio::test]
     async fn complex_paired_connect() {
-        let addr = "127.0.0.1:6379";
-        let connection = super::paired_connect(addr)
+        let connection = super::paired_connect("127.0.0.1", 6379)
             .await
             .expect("Cannot establish connection");
 
@@ -398,9 +399,7 @@ mod test {
 
     #[tokio::test]
     async fn sending_a_lot_of_data_test() {
-        let addr = "127.0.0.1:6379";
-
-        let connection = super::paired_connect(addr)
+        let connection = super::paired_connect("127.0.0.1", 6379)
             .await
             .expect("Cannot connect to Redis");
         let mut futures = Vec::with_capacity(1000);
@@ -417,7 +416,7 @@ mod test {
     #[tokio::test]
     async fn test_builder() {
         let mut builder =
-            ConnectionBuilder::new("127.0.0.1:6379").expect("Cannot construct builder...");
+            ConnectionBuilder::new("127.0.0.1", 6379).expect("Cannot construct builder...");
         builder.password("password");
         builder.username(String::from("username"));
         let connection_result = builder.paired_connect().await;

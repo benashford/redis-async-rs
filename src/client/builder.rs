@@ -15,15 +15,17 @@ use crate::error;
 #[derive(Debug)]
 /// Connection builder
 pub struct ConnectionBuilder {
-    pub(crate) addr: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
     pub(crate) username: Option<Arc<str>>,
     pub(crate) password: Option<Arc<str>>,
 }
 
 impl ConnectionBuilder {
-    pub fn new(addr: impl Into<String>) -> Result<Self, error::Error> {
+    pub fn new(host: impl Into<String>, port: u16) -> Result<Self, error::Error> {
         Ok(Self {
-            addr: addr.into(),
+            host: host.into(),
+            port,
             username: None,
             password: None,
         })
