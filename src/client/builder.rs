@@ -19,6 +19,8 @@ pub struct ConnectionBuilder {
     pub(crate) port: u16,
     pub(crate) username: Option<Arc<str>>,
     pub(crate) password: Option<Arc<str>>,
+    #[cfg(feature = "tls")]
+    pub(crate) tls: bool,
 }
 
 impl ConnectionBuilder {
@@ -28,6 +30,8 @@ impl ConnectionBuilder {
             port,
             username: None,
             password: None,
+            #[cfg(feature = "tls")]
+            tls: false,
         })
     }
 
@@ -40,6 +44,12 @@ impl ConnectionBuilder {
     /// Set the password used when connecting
     pub fn username<V: Into<Arc<str>>>(&mut self, username: V) -> &mut Self {
         self.username = Some(username.into());
+        self
+    }
+
+    #[cfg(feature = "tls")]
+    pub fn tls(&mut self) -> &mut Self {
+        self.tls = true;
         self
     }
 }

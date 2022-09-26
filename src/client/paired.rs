@@ -209,10 +209,11 @@ async fn inner_conn_fn(
     port: u16,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
+    tls: bool,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
-    let connection = connect_with_auth(&host, port, username, password).await?;
+    let connection = connect_with_auth(&host, port, username, password, tls).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
@@ -230,8 +231,13 @@ impl ConnectionBuilder {
             con.unbounded_send(act).map_err(|e| e.into())
         };
 
+        #[cfg(feature = "tls")]
+        let tls = self.tls;
+        #[cfg(not(feature = "tls"))]
+        let tls = false;
+
         let conn_fn = move || {
-            let con_f = inner_conn_fn(host.clone(), port, username.clone(), password.clone());
+            let con_f = inner_conn_fn(host.clone(), port, username.clone(), password.clone(), tls);
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };
 

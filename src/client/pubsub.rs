@@ -21,7 +21,6 @@ use futures_util::{
     stream::{Fuse, Stream, StreamExt},
 };
 
-
 use super::{
     connect::{connect_with_auth, RespConnection},
     ConnectionBuilder,
@@ -346,11 +345,12 @@ async fn inner_conn_fn(
     port: u16,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
+    tls: bool,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
 
-    let connection = connect_with_auth(&host, port, username, password).await?;
+    let connection = connect_with_auth(&host, port, username, password, tls).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     tokio::spawn(async {
         match PubsubConnectionInner::new(connection, out_rx).await {
@@ -368,12 +368,18 @@ impl ConnectionBuilder {
         let username = self.username.clone();
         let password = self.password.clone();
 
+        #[cfg(feature = "tls")]
+        let tls = self.tls;
+        #[cfg(not(feature = "tls"))]
+        let tls = false;
+
         let reconnecting_f = reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
                 con.unbounded_send(act).map_err(|e| e.into())
             },
             move || {
-                let con_f = inner_conn_fn(host.clone(), port, username.clone(), password.clone());
+                let con_f =
+                    inner_conn_fn(host.clone(), port, username.clone(), password.clone(), tls);
                 Box::pin(con_f)
             },
         );
