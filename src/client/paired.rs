@@ -363,7 +363,6 @@ where
     }
 }
 
-#[cfg(not(feature = "tls"))]
 #[cfg(test)]
 mod test {
     use super::ConnectionBuilder;

@@ -26,7 +26,6 @@ pub mod paired;
 mod builder;
 pub mod pubsub;
 
-#[cfg(not(feature = "tls"))]
 pub use self::connect::connect;
 #[cfg(feature = "tls")]
 pub use self::connect::connect_tls;

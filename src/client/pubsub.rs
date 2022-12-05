@@ -485,7 +485,6 @@ impl Drop for PubsubStream {
     }
 }
 
-#[cfg(not(feature = "tls"))]
 #[cfg(test)]
 mod test {
     use futures::{try_join, StreamExt, TryStreamExt};
