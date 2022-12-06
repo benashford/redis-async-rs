@@ -341,6 +341,7 @@ pub struct PubsubConnection {
 }
 
 async fn inner_conn_fn(
+    // Needs to be a String for lifetime reasons
     host: String,
     port: u16,
     username: Option<Arc<str>>,
@@ -363,8 +364,6 @@ async fn inner_conn_fn(
 
 impl ConnectionBuilder {
     pub fn pubsub_connect(&self) -> impl Future<Output = Result<PubsubConnection, error::Error>> {
-        let host = self.host.clone();
-        let port = self.port;
         let username = self.username.clone();
         let password = self.password.clone();
 
@@ -372,6 +371,9 @@ impl ConnectionBuilder {
         let tls = self.tls;
         #[cfg(not(feature = "tls"))]
         let tls = false;
+
+        let host = self.host.clone();
+        let port = self.port;
 
         let reconnecting_f = reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {

@@ -23,10 +23,15 @@ use crate::{
 
 #[pin_project(project = RespConnectionInnerProj)]
 pub enum RespConnectionInner {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "with-rustls")]
     Tls {
         #[pin]
         stream: tokio_rustls::client::TlsStream<TcpStream>,
+    },
+    #[cfg(feature = "with-native-tls")]
+    Tls {
+        #[pin]
+        stream: tokio_native_tls::TlsStream<TcpStream>,
     },
     Plain {
         #[pin]
@@ -110,7 +115,7 @@ pub async fn connect(host: &str, port: u16) -> Result<RespConnection, error::Err
     Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "with-rustls")]
 pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
     use std::sync::Arc;
     use tokio_rustls::{
@@ -150,12 +155,30 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
     Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
 }
 
+#[cfg(feature = "with-native-tls")]
+pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+    let cx = native_tls::TlsConnector::builder().build()?;
+    let cx = tokio_native_tls::TlsConnector::from(cx);
+
+    let addr =
+        tokio::net::lookup_host((host, port))
+            .await?
+            .next()
+            .ok_or(error::Error::Connection(
+                error::ConnectionReason::ConnectionFailed,
+            ))?;
+    let tcp_stream = TcpStream::connect(addr).await?;
+    let stream = cx.connect(host, tcp_stream).await?;
+
+    Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
+}
+
 pub async fn connect_with_auth(
     host: &str,
     port: u16,
     username: Option<&str>,
     password: Option<&str>,
-    tls: bool,
+    #[allow(unused_variables)] tls: bool,
 ) -> Result<RespConnection, error::Error> {
     #[cfg(feature = "tls")]
     let mut connection = if tls {
@@ -165,7 +188,6 @@ pub async fn connect_with_auth(
     };
     #[cfg(not(feature = "tls"))]
     let mut connection = connect(host, port).await?;
-    let _ = tls;
 
     if let Some(password) = password {
         let mut auth = resp_array!["AUTH"];

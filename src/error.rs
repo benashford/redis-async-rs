@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2022 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -42,8 +42,11 @@ pub enum Error {
     /// a proper option.
     Unexpected(String),
 
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "with-rustls")]
     InvalidDnsName,
+
+    #[cfg(feature = "with-native-tls")]
+    Tls(native_tls::Error),
 }
 
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
@@ -79,6 +82,13 @@ impl error::Error for Error {
     }
 }
 
+#[cfg(feature = "with-native-tls")]
+impl From<native_tls::Error> for Error {
+    fn from(err: native_tls::Error) -> Error {
+        Error::Tls(err)
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -96,10 +106,12 @@ impl fmt::Display for Error {
             Error::Connection(ConnectionReason::NotConnected) => {
                 write!(f, "Connection has been closed")
             }
-            #[cfg(feature = "tls")]
+            #[cfg(feature = "with-rustls")]
             Error::InvalidDnsName => {
                 write!(f, "Invalid dns name")
             }
+            #[cfg(feature = "with-native-tls")]
+            Error::Tls(err) => write!(f, "{}", err),
             Error::Unexpected(err) => write!(f, "{}", err),
         }
     }

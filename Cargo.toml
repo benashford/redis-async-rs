@@ -11,19 +11,23 @@ edition = "2021"
 
 [dependencies]
 bytes = "1.0"
-log = "^0.4.11"
 futures-channel = "^0.3.7"
 futures-sink = "^0.3.7"
 futures-util = { version = "^0.3.7", features = ["sink"] }
-tokio = { version = "1.0", features = ["rt", "net", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-tokio-rustls = {version = "0.23.4", optional = true }
-webpki-roots = {version = "0.22.5", optional = true }
+log = "^0.4.11"
+native-tls = { version = "0.2", optional = true }
 pin-project = "1.0"
+tokio = { version = "1.0", features = ["rt", "net", "time"] }
+tokio-native-tls = { version = "0.3.0", optional = true }
+tokio-rustls = { version = "0.23.4", optional = true }
+tokio-util = { version = "0.7", features = ["codec"] }
+webpki-roots = {version = "0.22.5", optional = true }
 
 [features]
 default = []
-tls = ["tokio-rustls", "webpki-roots", "tokio/net"]
+tls = ["webpki-roots"]
+with-rustls = ["tokio-rustls", "tls"]
+with-native-tls = ["native-tls", "tokio-native-tls", "tls"]
 
 
 [dev-dependencies]
