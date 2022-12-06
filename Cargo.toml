@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.14.0"
+version = "0.14.1"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -25,8 +25,8 @@ webpki-roots = {version = "0.22.5", optional = true }
 
 [features]
 default = []
-tls = ["webpki-roots"]
-with-rustls = ["tokio-rustls", "tls"]
+tls = []
+with-rustls = ["tokio-rustls", "tls", "webpki-roots"]
 with-native-tls = ["native-tls", "tokio-native-tls", "tls"]
 
 
