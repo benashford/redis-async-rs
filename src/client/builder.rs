@@ -15,17 +15,23 @@ use crate::error;
 #[derive(Debug)]
 /// Connection builder
 pub struct ConnectionBuilder {
-    pub(crate) addr: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
     pub(crate) username: Option<Arc<str>>,
     pub(crate) password: Option<Arc<str>>,
+    #[cfg(feature = "tls")]
+    pub(crate) tls: bool,
 }
 
 impl ConnectionBuilder {
-    pub fn new(addr: impl Into<String>) -> Result<Self, error::Error> {
+    pub fn new(host: impl Into<String>, port: u16) -> Result<Self, error::Error> {
         Ok(Self {
-            addr: addr.into(),
+            host: host.into(),
+            port,
             username: None,
             password: None,
+            #[cfg(feature = "tls")]
+            tls: false,
         })
     }
 
@@ -38,6 +44,12 @@ impl ConnectionBuilder {
     /// Set the password used when connecting
     pub fn username<V: Into<Arc<str>>>(&mut self, username: V) -> &mut Self {
         self.username = Some(username.into());
+        self
+    }
+
+    #[cfg(feature = "tls")]
+    pub fn tls(&mut self) -> &mut Self {
+        self.tls = true;
         self
     }
 }

@@ -21,8 +21,6 @@ use futures_util::{
     stream::{Fuse, Stream, StreamExt},
 };
 
-use tokio::net::ToSocketAddrs;
-
 use super::{
     connect::{connect_with_auth, RespConnection},
     ConnectionBuilder,
@@ -343,14 +341,17 @@ pub struct PubsubConnection {
 }
 
 async fn inner_conn_fn(
-    addr: impl ToSocketAddrs,
+    // Needs to be a String for lifetime reasons
+    host: String,
+    port: u16,
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
+    tls: bool,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
 
-    let connection = connect_with_auth(&addr, username, password).await?;
+    let connection = connect_with_auth(&host, port, username, password, tls).await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     tokio::spawn(async {
         match PubsubConnectionInner::new(connection, out_rx).await {
@@ -363,16 +364,24 @@ async fn inner_conn_fn(
 
 impl ConnectionBuilder {
     pub fn pubsub_connect(&self) -> impl Future<Output = Result<PubsubConnection, error::Error>> {
-        let addr = self.addr.clone();
         let username = self.username.clone();
         let password = self.password.clone();
+
+        #[cfg(feature = "tls")]
+        let tls = self.tls;
+        #[cfg(not(feature = "tls"))]
+        let tls = false;
+
+        let host = self.host.clone();
+        let port = self.port;
 
         let reconnecting_f = reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
                 con.unbounded_send(act).map_err(|e| e.into())
             },
             move || {
-                let con_f = inner_conn_fn(addr.clone(), username.clone(), password.clone());
+                let con_f =
+                    inner_conn_fn(host.clone(), port, username.clone(), password.clone(), tls);
                 Box::pin(con_f)
             },
         );
@@ -388,8 +397,11 @@ impl ConnectionBuilder {
 /// connection is established; after the intial establishment, if the connection drops for any
 /// reason (e.g. Redis server being restarted), the connection will attempt re-connect, however
 /// any subscriptions will need to be re-subscribed.
-pub async fn pubsub_connect(addr: impl Into<String>) -> Result<PubsubConnection, error::Error> {
-    ConnectionBuilder::new(addr)?.pubsub_connect().await
+pub async fn pubsub_connect(
+    host: impl Into<String>,
+    port: u16,
+) -> Result<PubsubConnection, error::Error> {
+    ConnectionBuilder::new(host, port)?.pubsub_connect().await
 }
 
 impl PubsubConnection {
@@ -483,9 +495,8 @@ mod test {
 
     #[tokio::test]
     async fn subscribe_test() {
-        let addr = "127.0.0.1:6379";
-        let paired_c = client::paired_connect(addr);
-        let pubsub_c = super::pubsub_connect(addr);
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub
@@ -513,9 +524,8 @@ mod test {
 
     #[tokio::test]
     async fn psubscribe_test() {
-        let addr = "127.0.0.1:6379";
-        let paired_c = client::paired_connect(addr);
-        let pubsub_c = super::pubsub_connect(addr);
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub

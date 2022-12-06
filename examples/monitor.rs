@@ -18,11 +18,18 @@ use redis_async::{client, resp_array};
 async fn main() {
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:6379".to_string());
+        .unwrap_or_else(|| "127.0.0.1".to_string());
 
-    let mut connection = client::connect(&addr)
+    #[cfg(not(feature = "tls"))]
+    let mut connection = client::connect(&addr, 6379)
         .await
         .expect("Cannot connect to Redis");
+
+    #[cfg(feature = "tls")]
+    let mut connection = client::connect_tls(&addr, 6379)
+        .await
+        .expect("Cannot connect to Redis");
+
     connection
         .send(resp_array!["MONITOR"])
         .await

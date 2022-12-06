@@ -1,6 +1,5 @@
 # redis-async
 
-[![Build Status](https://travis-ci.org/benashford/redis-async-rs.svg?branch=master)](https://travis-ci.org/benashford/redis-async-rs)
 [![](http://meritbadge.herokuapp.com/redis-async)](https://crates.io/crates/redis-async)
 [![](https://img.shields.io/crates/d/redis-async.svg)](https://crates.io/crates/redis-async)
 [![](https://img.shields.io/crates/dv/redis-async.svg)](https://crates.io/crates/redis-async)
@@ -16,11 +15,7 @@ Initially I'm focussing on single-server Redis instances, another long-term goal
 
 ### Recent changes
 
-Version 0.5 introduces minor changes to error handling, and reconnect behaviour in the event of a connection being dropped.
-
-In summary: a `PairedConnection` or `PubsubConnection` will remain valid and will attempt to reconnect when a connection drops (however, if a `PubsubConnection` drops, applications will need to re-subscribe). If a connection does drop, re-connection occurs in the background, calls to the connection in the meantime will error with `Error::Connection` the details will explain why, including if a reconnection failed. Clients should retry until connection succeeds in accordance with the needs of the particular application.
-
-Version 0.8 contains minor refactoring with an obvious upgrade path.
+Version 0.14 introduces experimental TLS support, use feature flag `with-rustls` for Rustls support, or `with-native-tls` for native TLS support. There are other minor changes to the public API to enable this, in particular separate `host` and `port` arguments are required rather than a single `addr` argument.
 
 ## Other clients
 

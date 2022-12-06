@@ -62,3 +62,7 @@ pub mod client;
 pub mod error;
 
 pub(crate) mod reconnect;
+
+// Ensure that exclusive features cannot be selected together.
+#[cfg(all(feature = "with-rustls", feature = "with-native-tls"))]
+compile_error!("Only one TLS backend can be selected at a time");

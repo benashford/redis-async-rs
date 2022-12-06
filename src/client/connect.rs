@@ -9,13 +9,91 @@
  */
 
 use futures_util::{SinkExt, StreamExt};
-
-use tokio::net::{TcpStream, ToSocketAddrs};
+use pin_project::pin_project;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{error, resp};
+use crate::{
+    error,
+    resp::{self, RespCodec},
+};
 
-pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
+#[pin_project(project = RespConnectionInnerProj)]
+pub enum RespConnectionInner {
+    #[cfg(feature = "with-rustls")]
+    Tls {
+        #[pin]
+        stream: tokio_rustls::client::TlsStream<TcpStream>,
+    },
+    #[cfg(feature = "with-native-tls")]
+    Tls {
+        #[pin]
+        stream: tokio_native_tls::TlsStream<TcpStream>,
+    },
+    Plain {
+        #[pin]
+        stream: TcpStream,
+    },
+}
+
+impl AsyncWrite for RespConnectionInner {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let this = self.project();
+        match this {
+            #[cfg(feature = "tls")]
+            RespConnectionInnerProj::Tls { stream } => stream.poll_write(cx, buf),
+            RespConnectionInnerProj::Plain { stream } => stream.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let this = self.project();
+        match this {
+            #[cfg(feature = "tls")]
+            RespConnectionInnerProj::Tls { stream } => stream.poll_flush(cx),
+            RespConnectionInnerProj::Plain { stream } => stream.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let this = self.project();
+        match this {
+            #[cfg(feature = "tls")]
+            RespConnectionInnerProj::Tls { stream } => stream.poll_shutdown(cx),
+            RespConnectionInnerProj::Plain { stream } => stream.poll_shutdown(cx),
+        }
+    }
+}
+
+impl AsyncRead for RespConnectionInner {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.project();
+        match this {
+            #[cfg(feature = "tls")]
+            RespConnectionInnerProj::Tls { stream } => stream.poll_read(cx, buf),
+            RespConnectionInnerProj::Plain { stream } => stream.poll_read(cx, buf),
+        }
+    }
+}
+
+pub type RespConnection = Framed<RespConnectionInner, RespCodec>;
 
 /// Connect to a Redis server and return a Future that resolves to a
 /// `RespConnection` for reading and writing asynchronously.
@@ -32,17 +110,84 @@ pub type RespConnection = Framed<TcpStream, resp::RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub async fn connect(addr: impl ToSocketAddrs) -> Result<RespConnection, error::Error> {
+pub async fn connect(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+    let tcp_stream = TcpStream::connect((host, port)).await?;
+    Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
+}
+
+#[cfg(feature = "with-rustls")]
+pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+    use std::sync::Arc;
+    use tokio_rustls::{
+        rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore},
+        TlsConnector,
+    };
+
+    let mut root_store = RootCertStore::empty();
+    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
+    let config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
+    let addr =
+        tokio::net::lookup_host((host, port))
+            .await?
+            .next()
+            .ok_or(error::Error::Connection(
+                error::ConnectionReason::ConnectionFailed,
+            ))?;
     let tcp_stream = TcpStream::connect(addr).await?;
-    Ok(resp::RespCodec.framed(tcp_stream))
+
+    let stream = connector
+        .connect(
+            host.try_into()
+                .map_err(|_err| error::Error::InvalidDnsName)?,
+            tcp_stream,
+        )
+        .await?;
+    Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
+}
+
+#[cfg(feature = "with-native-tls")]
+pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+    let cx = native_tls::TlsConnector::builder().build()?;
+    let cx = tokio_native_tls::TlsConnector::from(cx);
+
+    let addr =
+        tokio::net::lookup_host((host, port))
+            .await?
+            .next()
+            .ok_or(error::Error::Connection(
+                error::ConnectionReason::ConnectionFailed,
+            ))?;
+    let tcp_stream = TcpStream::connect(addr).await?;
+    let stream = cx.connect(host, tcp_stream).await?;
+
+    Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
 }
 
 pub async fn connect_with_auth(
-    addr: impl ToSocketAddrs,
+    host: &str,
+    port: u16,
     username: Option<&str>,
     password: Option<&str>,
+    #[allow(unused_variables)] tls: bool,
 ) -> Result<RespConnection, error::Error> {
-    let mut connection = connect(addr).await?;
+    #[cfg(feature = "tls")]
+    let mut connection = if tls {
+        connect_tls(host, port).await?
+    } else {
+        connect(host, port).await?
+    };
+    #[cfg(not(feature = "tls"))]
+    let mut connection = connect(host, port).await?;
 
     if let Some(password) = password {
         let mut auth = resp_array!["AUTH"];
@@ -82,9 +227,9 @@ mod test {
 
     #[tokio::test]
     async fn can_connect() {
-        let addr = "127.0.0.1:6379";
-
-        let mut connection = super::connect(addr).await.expect("Cannot connect");
+        let mut connection = super::connect("127.0.0.1", 6379)
+            .await
+            .expect("Cannot connect");
         connection
             .send(resp_array!["PING", "TEST"])
             .await
@@ -101,9 +246,9 @@ mod test {
 
     #[tokio::test]
     async fn complex_test() {
-        let addr = "127.0.0.1:6379";
-
-        let mut connection = super::connect(addr).await.expect("Cannot connect");
+        let mut connection = super::connect("127.0.0.1", 6379)
+            .await
+            .expect("Cannot connect");
         let mut ops = Vec::new();
         ops.push(resp_array!["FLUSH"]);
         ops.extend((0..1000).map(|i| resp_array!["SADD", "test_set", format!("VALUE: {}", i)]));
