@@ -34,24 +34,31 @@ struct ReconnectInner<A, T> {
     conn_fn: Box<ConnFn<T>>,
 }
 
+impl<A, T> fmt::Debug for ReconnectInner<A, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let struct_name = format!(
+            "ReconnectInner<{}, {}>",
+            std::any::type_name::<A>(),
+            std::any::type_name::<T>()
+        );
+
+        let work_fn_d = format!("@{:p}", self.work_fn.as_ref());
+        let conn_fn_d = format!("@{:p}", self.conn_fn.as_ref());
+
+        f.debug_struct(&struct_name)
+            .field("state", &self.state)
+            .field("work_fn", &work_fn_d)
+            .field("conn_fn", &conn_fn_d)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Reconnect<A, T>(Arc<ReconnectInner<A, T>>);
 
 impl<A, T> Clone for Reconnect<A, T> {
     fn clone(&self) -> Self {
         Reconnect(self.0.clone())
-    }
-}
-
-impl<A, T> fmt::Debug for Reconnect<A, T>
-where
-    T: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Reconnect")
-            .field("state", &self.0.state)
-            .field("work_fn", &String::from("REDACTED"))
-            .field("conn_fn", &String::from("REDACTED"))
-            .finish()
     }
 }
 

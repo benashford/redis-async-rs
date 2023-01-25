@@ -466,6 +466,7 @@ impl PubsubConnection {
     }
 }
 
+#[derive(Debug)]
 pub struct PubsubStream {
     topic: String,
     underlying: PubsubStreamInner,

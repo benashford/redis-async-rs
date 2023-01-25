@@ -722,6 +722,7 @@ mod tests {
         );
 
         let vals = vec![String::from("a"), String::from("b")];
+        #[allow(clippy::needless_borrow)]
         let resp_object = resp_array!["RPUSH", "xyz"].append(&vals);
         let bytes = obj_to_bytes(resp_object);
         assert_eq!(

@@ -308,6 +308,7 @@ impl PairedConnection {
     }
 }
 
+#[derive(Debug)]
 enum SendFutureType {
     Wait(oneshot::Receiver<Result<resp::RespValue, error::Error>>),
     Error(Option<error::Error>),
@@ -325,6 +326,7 @@ impl From<error::Error> for SendFutureType {
     }
 }
 
+#[derive(Debug)]
 pub struct SendFuture<T> {
     send_type: SendFutureType,
     _phantom: PhantomData<T>,
