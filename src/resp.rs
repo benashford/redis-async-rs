@@ -85,7 +85,7 @@ impl RespValue {
     }
 }
 
-/// A trait to be implemented for every time which can be read from a RESP value.
+/// A trait to be implemented for every type which can be read from a RESP value.
 ///
 /// Implementing this trait on a type means that type becomes a valid return type for calls such as `send` on
 /// `client::PairedConnection`
@@ -216,22 +216,23 @@ impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp fo
     fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T, S>, Error> {
         match resp {
             RespValue::Array(ary) => {
-                let mut map = HashMap::with_capacity_and_hasher(ary.len(), S::default());
-                let mut items = ary.into_iter();
-
-                while let Some(k) = items.next() {
-                    let key = K::from_resp(k)?;
-                    let value = T::from_resp(items.next().ok_or_else(|| {
-                        error::resp(
-                            "Cannot convert an odd number of elements into a hashmap",
-                            "".into(),
-                        )
-                    })?)?;
-
-                    map.insert(key, value);
+                let len = ary.len();
+                if len % 2 != 0 {
+                    return Err(error::resp(
+                        "Cannot convert an odd number of elements into a hashmap",
+                        RespValue::Array(ary),
+                    ));
                 }
 
-                Ok(map)
+                let mut items = ary.into_iter();
+                (0..(len / 2))
+                    .map(|_| {
+                        // It's safe to unwrap, because we checked the length before
+                        let key = K::from_resp(items.next().unwrap())?;
+                        let value = T::from_resp(items.next().unwrap())?;
+                        Ok((key, value))
+                    })
+                    .collect()
             }
             _ => Err(error::resp("Cannot be converted into a hashmap", resp)),
         }
@@ -374,52 +375,23 @@ pub trait IntoRespString {
 }
 
 macro_rules! string_into_resp {
-    ($t:ty) => {
+    ($(<$l:lifetime>)?|$i:ident : $t:ty| $e:expr) => {
+        impl $(<$l>)? IntoRespString for $t {
+            fn into_resp_string(self) -> RespValue {
+                let $i = self;
+                RespValue::BulkString($e)
+            }
+        }
         into_resp!($t, into_resp_string);
-    };
-}
-
-impl IntoRespString for String {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self.into_bytes())
     }
 }
-string_into_resp!(String);
 
-impl<'a> IntoRespString for &'a String {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
-    }
-}
-string_into_resp!(&'a String);
-
-impl<'a> IntoRespString for &'a str {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
-    }
-}
-string_into_resp!(&'a str);
-
-impl<'a> IntoRespString for &'a [u8] {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self.to_vec())
-    }
-}
-string_into_resp!(&'a [u8]);
-
-impl IntoRespString for Vec<u8> {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self)
-    }
-}
-string_into_resp!(Vec<u8>);
-
-impl IntoRespString for Arc<str> {
-    fn into_resp_string(self) -> RespValue {
-        RespValue::BulkString(self.as_bytes().into())
-    }
-}
-string_into_resp!(Arc<str>);
+string_into_resp!(|it: String| it.into_bytes());
+string_into_resp!(<'a>|it: &'a String| it.as_bytes().into());
+string_into_resp!(<'a>|it: &'a str| it.as_bytes().into());
+string_into_resp!(<'a>|it: &'a [u8]| it.to_vec());
+string_into_resp!(|it: Vec<u8>| it);
+string_into_resp!(|it: Arc<str>| it.as_bytes().into());
 
 pub trait IntoRespInteger {
     fn into_resp_integer(self) -> RespValue;

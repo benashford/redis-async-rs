@@ -8,7 +8,7 @@
  * except according to those terms.
  */
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -138,15 +138,10 @@ impl PubsubConnectionInner {
                 messages.pop(),
                 messages.pop(),
             ) {
-                (Some(msg), Some(topic), Some(message_type), None) => {
-                    match (msg, String::from_resp(topic), message_type) {
-                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
-                        _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
-                    }
-                }
-                (Some(msg), Some(_), Some(topic), Some(message_type)) => {
-                    match (msg, String::from_resp(topic), message_type) {
-                        (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
+                (Some(msg), Some(topic), Some(message_type), None)
+                | (Some(msg), Some(_), Some(topic), Some(message_type)) => {
+                    match (String::from_resp(topic), message_type) {
+                        (Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
                     }
                 }
@@ -164,96 +159,16 @@ impl PubsubConnectionInner {
         };
 
         match message_type.as_slice() {
-            b"subscribe" => match self.pending_subs.remove(&topic) {
-                Some((sender, signal)) => {
-                    self.subscriptions.insert(topic, sender);
-                    signal
-                        .send(())
-                        .map_err(|()| error::internal("Error confirming subscription"))?
-                }
-                None => {
-                    return Err(error::internal(format!(
-                        "Received unexpected subscribe notification for topic: {}",
-                        topic
-                    )));
-                }
-            },
-            b"psubscribe" => match self.pending_psubs.remove(&topic) {
-                Some((sender, signal)) => {
-                    self.psubscriptions.insert(topic, sender);
-                    signal
-                        .send(())
-                        .map_err(|()| error::internal("Error confirming subscription"))?
-                }
-                None => {
-                    return Err(error::internal(format!(
-                        "Received unexpected subscribe notification for topic: {}",
-                        topic
-                    )));
-                }
-            },
-            b"unsubscribe" => {
-                match self.subscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
-                }
-                if self.subscriptions.is_empty() {
-                    return Ok(false);
-                }
+            b"subscribe" => {
+                process_subscribe(&mut self.pending_subs, &mut self.subscriptions, topic)
             }
-            b"punsubscribe" => {
-                match self.psubscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
-                }
-                if self.psubscriptions.is_empty() {
-                    return Ok(false);
-                }
+            b"psubscribe" => {
+                process_subscribe(&mut self.pending_psubs, &mut self.psubscriptions, topic)
             }
-            b"message" => match self.subscriptions.get(&topic) {
-                Some(sender) => {
-                    if let Err(error) = sender.unbounded_send(Ok(msg)) {
-                        if !error.is_disconnected() {
-                            return Err(error::internal(format!("Cannot send message: {}", error)));
-                        }
-                    }
-                }
-                None => {
-                    return Err(error::internal(format!(
-                        "Unexpected message on topic: {}",
-                        topic
-                    )));
-                }
-            },
-            b"pmessage" => match self.psubscriptions.get(&topic) {
-                Some(sender) => {
-                    if let Err(error) = sender.unbounded_send(Ok(msg)) {
-                        if !error.is_disconnected() {
-                            return Err(error::internal(format!("Cannot send message: {}", error)));
-                        }
-                    }
-                }
-                None => {
-                    return Err(error::internal(format!(
-                        "Unexpected message on topic: {}",
-                        topic
-                    )));
-                }
-            },
+            b"unsubscribe" => process_unsubscribe(&mut self.subscriptions, &topic),
+            b"punsubscribe" => process_unsubscribe(&mut self.psubscriptions, &topic),
+            b"message" => process_message(&self.subscriptions, &topic, msg),
+            b"pmessage" => process_message(&self.psubscriptions, &topic, msg),
             t => {
                 return Err(error::internal(format!(
                     "Unexpected data on Pub/Sub connection: {}",
@@ -261,8 +176,6 @@ impl PubsubConnectionInner {
                 )));
             }
         }
-
-        Ok(true)
     }
 
     /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
@@ -275,14 +188,10 @@ impl PubsubConnectionInner {
                         return Ok(false);
                     } else {
                         // This can only happen if the connection is closed server-side
-                        for sub in self.subscriptions.values() {
+                        let subs = self.subscriptions.values();
+                        let psubs = self.psubscriptions.values();
+                        for sub in subs.chain(psubs) {
                             sub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
-                        for psub in self.psubscriptions.values() {
-                            psub.unbounded_send(Err(error::Error::Connection(
                                 ConnectionReason::NotConnected,
                             )))
                             .unwrap();
@@ -297,15 +206,10 @@ impl PubsubConnectionInner {
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    for sub in self.subscriptions.values() {
+                    let subs = self.subscriptions.values();
+                    let psubs = self.psubscriptions.values();
+                    for sub in subs.chain(psubs) {
                         sub.unbounded_send(Err(error::unexpected(format!(
-                            "Connection is in the process of failing due to: {}",
-                            e
-                        ))))
-                        .unwrap();
-                    }
-                    for psub in self.psubscriptions.values() {
-                        psub.unbounded_send(Err(error::unexpected(format!(
                             "Connection is in the process of failing due to: {}",
                             e
                         ))))
@@ -315,6 +219,50 @@ impl PubsubConnectionInner {
                 }
             }
         }
+    }
+}
+
+fn process_subscribe(
+    pending_subs: &mut BTreeMap<String, (PubsubSink, oneshot::Sender<()>)>,
+    subscriptions: &mut BTreeMap<String, PubsubSink>,
+    topic: String,
+) -> Result<bool, error::Error> {
+    let (sender, signal) = pending_subs.remove(&topic).ok_or(error::internal(format!(
+        "Received unexpected subscribe notification for topic: {}",
+        topic
+    )))?;
+    subscriptions.insert(topic, sender);
+    signal
+        .send(())
+        .map_err(|()| error::internal("Error confirming subscription"))?;
+    Ok(true)
+}
+
+fn process_unsubscribe(
+    subscriptions: &mut BTreeMap<String, PubsubSink>,
+    topic: &str,
+) -> Result<bool, error::Error> {
+    subscriptions.remove(topic).ok_or(error::internal(format!(
+        "Unexpected unsubscribe message: {}",
+        topic
+    )))?;
+    Ok(!subscriptions.is_empty())
+}
+
+fn process_message(
+    subscriptions: &BTreeMap<String, PubsubSink>,
+    topic: &str,
+    msg: resp::RespValue,
+) -> Result<bool, error::Error> {
+    let sender = subscriptions.get(topic).ok_or(error::internal(format!(
+        "Unexpected message on topic: {}",
+        topic
+    )))?;
+    match sender.unbounded_send(Ok(msg)) {
+        Err(error) if !error.is_disconnected() => {
+            Err(error::internal(format!("Cannot send message: {}", error)))
+        }
+        _ => Ok(true),
     }
 }
 
