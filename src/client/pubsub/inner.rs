@@ -109,7 +109,7 @@ impl PubsubConnectionInner {
         }
     }
 
-    fn handle_message(&mut self, msg: resp::RespValue) -> Result<bool, error::Error> {
+    fn handle_message(&mut self, msg: resp::RespValue) -> Result<(), error::Error> {
         let (message_type, topic, msg) = match msg {
             resp::RespValue::Array(mut messages) => match (
                 messages.pop(),
@@ -219,7 +219,7 @@ impl PubsubConnectionInner {
             }
         }
 
-        Ok(true)
+        Ok(())
     }
 
     /// Checks whether the conditions are met such that this task should end.
@@ -268,9 +268,11 @@ impl PubsubConnectionInner {
                 }
                 Poll::Ready(Some(Ok(message))) => {
                     // A valid has message has been received, so lets handle it...
-                    let message_result = self.handle_message(message)?;
-                    if !message_result {
-                        // Stop if the conditions require it.
+                    self.handle_message(message)?;
+
+                    // After handling a message, there may no longer be any valid subscriptions, so we check
+                    // all the ending criteria
+                    if self.should_end() {
                         return Ok(false);
                     }
                 }

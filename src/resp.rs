@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2023 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -11,6 +11,7 @@
 //! An implementation of the RESP protocol
 
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::io;
 use std::str;
@@ -26,7 +27,7 @@ use super::error::{self, Error};
 ///
 /// It is cloneable to allow multiple copies to be delivered in certain circumstances, e.g. multiple
 /// subscribers to the same topic.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum RespValue {
     Nil,
 
@@ -82,6 +83,27 @@ impl RespValue {
                 vals.push(item.into());
             }
             _ => panic!("Can only push to arrays"),
+        }
+    }
+}
+
+impl fmt::Debug for RespValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RespValue::Nil => write!(f, "Nil"),
+            RespValue::Array(vals) => write!(f, "Array({:?})", vals),
+            RespValue::BulkString(bytes) => {
+                // For BulkString we try and be clever and show the utf-8 version
+                // if it's valid utf-8
+                if let Ok(string) = str::from_utf8(bytes) {
+                    write!(f, "BulkString({:?})", string)
+                } else {
+                    write!(f, "BulkString({:?})", bytes)
+                }
+            }
+            RespValue::Error(string) => write!(f, "Error({:?})", string),
+            RespValue::Integer(int) => write!(f, "Integer({:?})", int),
+            RespValue::SimpleString(string) => write!(f, "SimpleString({:?})", string),
         }
     }
 }

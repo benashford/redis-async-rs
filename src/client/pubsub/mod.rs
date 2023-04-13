@@ -203,9 +203,28 @@ impl Drop for PubsubStream {
 
 #[cfg(test)]
 mod test {
+    use std::mem;
+
     use futures::{try_join, StreamExt, TryStreamExt};
 
     use crate::{client, resp};
+
+    /* IMPORTANT: The tests run in parallel, so the topic names used must be exclusive to each test */
+    static SUBSCRIBE_TEST_TOPIC: &str = "test-topic";
+    static SUBSCRIBE_TEST_NON_TOPIC: &str = "test-not-topic";
+
+    static UNSUBSCRIBE_TOPIC_1: &str = "test-topic-1";
+    static UNSUBSCRIBE_TOPIC_2: &str = "test-topic-2";
+    static UNSUBSCRIBE_TOPIC_3: &str = "test-topic-3";
+
+    static RESUBSCRIBE_TOPIC: &str = "test-topic-resubscribe";
+
+    static DROP_CONNECTION_TOPIC: &str = "test-topic-drop-connection";
+
+    static PSUBSCRIBE_PATTERN: &str = "ptest.*";
+    static PSUBSCRIBE_TOPIC_1: &str = "ptest.1";
+    static PSUBSCRIBE_TOPIC_2: &str = "ptest.2";
+    static PSUBSCRIBE_TOPIC_3: &str = "ptest.3";
 
     #[tokio::test]
     async fn subscribe_test() {
@@ -214,14 +233,22 @@ mod test {
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub
-            .subscribe("test-topic")
+            .subscribe(SUBSCRIBE_TEST_TOPIC)
             .await
             .expect("Cannot subscribe to topic");
 
-        paired.send_and_forget(resp_array!["PUBLISH", "test-topic", "test-message"]);
-        paired.send_and_forget(resp_array!["PUBLISH", "test-not-topic", "test-message-1.5"]);
+        paired.send_and_forget(resp_array!["PUBLISH", SUBSCRIBE_TEST_TOPIC, "test-message"]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            SUBSCRIBE_TEST_NON_TOPIC,
+            "test-message-1.5"
+        ]);
         let _: resp::RespValue = paired
-            .send(resp_array!["PUBLISH", "test-topic", "test-message2"])
+            .send(resp_array![
+                "PUBLISH",
+                SUBSCRIBE_TEST_TOPIC,
+                "test-message2"
+            ])
             .await
             .expect("Cannot send to topic");
 
@@ -236,6 +263,187 @@ mod test {
         assert_eq!(result[1], "test-message2".into());
     }
 
+    /// A test to examine the edge-case where a client subscribes to a topic, then the subscription is specifically unsubscribed,
+    /// vs. where the subscription is automatically unsubscribed.
+    #[tokio::test]
+    async fn unsubscribe_test() {
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let mut topic_1 = pubsub
+            .subscribe(UNSUBSCRIBE_TOPIC_1)
+            .await
+            .expect("Cannot subscribe to topic");
+        let mut topic_2 = pubsub
+            .subscribe(UNSUBSCRIBE_TOPIC_2)
+            .await
+            .expect("Cannot subscribe to topic");
+        let mut topic_3 = pubsub
+            .subscribe(UNSUBSCRIBE_TOPIC_3)
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_1,
+            "test-message-1"
+        ]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_2,
+            "test-message-2"
+        ]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_3,
+            "test-message-3"
+        ]);
+
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1".into());
+
+        let result2 = topic_2
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result2, "test-message-2".into());
+
+        let result3 = topic_3
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result3, "test-message-3".into());
+
+        // Unsubscribe from topic 2
+        pubsub.unsubscribe(UNSUBSCRIBE_TOPIC_2);
+
+        // Drop the subscription for topic 3
+        mem::drop(topic_3);
+
+        // Send some more messages
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_1,
+            "test-message-1.5"
+        ]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_2,
+            "test-message-2.5"
+        ]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TOPIC_3,
+            "test-message-3.5"
+        ]);
+
+        // Get the next message for topic 1
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1.5".into());
+
+        // Get the next message for topic 2
+        let result2 = topic_2.next().await;
+        assert!(result2.is_none());
+    }
+
+    /// Test that we can subscribe, unsubscribe, and resubscribe to a topic.
+    #[tokio::test]
+    async fn resubscribe_test() {
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let mut topic_1 = pubsub
+            .subscribe(RESUBSCRIBE_TOPIC)
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array!["PUBLISH", RESUBSCRIBE_TOPIC, "test-message-1"]);
+
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1".into());
+
+        // Unsubscribe from topic 1
+        pubsub.unsubscribe(RESUBSCRIBE_TOPIC);
+
+        // Send some more messages
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            RESUBSCRIBE_TOPIC,
+            "test-message-1.5"
+        ]);
+
+        // Get the next message for topic 1
+        let result1 = topic_1.next().await;
+        assert!(result1.is_none());
+
+        // Resubscribe to topic 1
+        let mut topic_1 = pubsub
+            .subscribe(RESUBSCRIBE_TOPIC)
+            .await
+            .expect("Cannot subscribe to topic");
+
+        // Send some more messages
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            RESUBSCRIBE_TOPIC,
+            "test-message-1.75"
+        ]);
+
+        // Get the next message for topic 1
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1.75".into());
+    }
+
+    /// Test that dropping the connection doesn't stop the subscriptions. Not initially anyway.
+    #[tokio::test]
+    async fn drop_connection_test() {
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let mut topic_1 = pubsub
+            .subscribe(DROP_CONNECTION_TOPIC)
+            .await
+            .expect("Cannot subscribe to topic");
+
+        mem::drop(pubsub);
+
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            DROP_CONNECTION_TOPIC,
+            "test-message-1"
+        ]);
+
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1".into());
+
+        mem::drop(topic_1);
+    }
+
     #[tokio::test]
     async fn psubscribe_test() {
         let paired_c = client::paired_connect("127.0.0.1", 6379);
@@ -243,14 +451,14 @@ mod test {
         let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
 
         let topic_messages = pubsub
-            .psubscribe("test.*")
+            .psubscribe(PSUBSCRIBE_PATTERN)
             .await
             .expect("Cannot subscribe to topic");
 
-        paired.send_and_forget(resp_array!["PUBLISH", "test.1", "test-message-1"]);
-        paired.send_and_forget(resp_array!["PUBLISH", "test.2", "test-message-2"]);
+        paired.send_and_forget(resp_array!["PUBLISH", PSUBSCRIBE_TOPIC_1, "test-message-1"]);
+        paired.send_and_forget(resp_array!["PUBLISH", PSUBSCRIBE_TOPIC_2, "test-message-2"]);
         let _: resp::RespValue = paired
-            .send(resp_array!["PUBLISH", "test.3", "test-message-3"])
+            .send(resp_array!["PUBLISH", PSUBSCRIBE_TOPIC_3, "test-message-3"])
             .await
             .expect("Cannot send to topic");
 
