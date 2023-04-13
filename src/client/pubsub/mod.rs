@@ -233,6 +233,9 @@ mod test {
     static PSUBSCRIBE_TOPIC_2: &str = "ptest.2";
     static PSUBSCRIBE_TOPIC_3: &str = "ptest.3";
 
+    static UNSUBSCRIBE_TWICE_TOPIC_1: &str = "test-topic-1-twice";
+    static UNSUBSCRIBE_TWICE_TOPIC_2: &str = "test-topic-2-twice";
+
     #[tokio::test]
     async fn subscribe_test() {
         let paired_c = client::paired_connect("127.0.0.1", 6379);
@@ -479,5 +482,71 @@ mod test {
         assert_eq!(result[0], "test-message-1".into());
         assert_eq!(result[1], "test-message-2".into());
         assert_eq!(result[2], "test-message-3".into());
+    }
+
+    /// Allow unsubscribe to be called twice
+    #[tokio::test]
+    async fn unsubscribe_twice_test() {
+        let paired_c = client::paired_connect("127.0.0.1", 6379);
+        let pubsub_c = super::pubsub_connect("127.0.0.1", 6379);
+        let (paired, pubsub) = try_join!(paired_c, pubsub_c).expect("Cannot connect to Redis");
+
+        let mut topic_1 = pubsub
+            .subscribe(UNSUBSCRIBE_TWICE_TOPIC_1)
+            .await
+            .expect("Cannot subscribe to topic");
+        let mut topic_2 = pubsub
+            .subscribe(UNSUBSCRIBE_TWICE_TOPIC_2)
+            .await
+            .expect("Cannot subscribe to topic");
+
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TWICE_TOPIC_1,
+            "test-message-1"
+        ]);
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TWICE_TOPIC_2,
+            "test-message-2"
+        ]);
+
+        pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
+        pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
+
+        paired.send_and_forget(resp_array![
+            "PUBLISH",
+            UNSUBSCRIBE_TWICE_TOPIC_1,
+            "test-message-1.5"
+        ]);
+
+        pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_1);
+
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1".into());
+
+        let result1 = topic_1
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result1, "test-message-1.5".into());
+
+        let result2 = topic_2
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result2, "test-message-2".into());
+
+        let result1 = topic_1.next().await;
+        assert!(result1.is_none());
+
+        let result2 = topic_2.next().await;
+        assert!(result2.is_none());
     }
 }
