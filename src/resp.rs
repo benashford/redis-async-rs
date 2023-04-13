@@ -48,6 +48,7 @@ pub enum RespValue {
 }
 
 impl RespValue {
+    #[inline]
     fn into_result(self) -> Result<RespValue, Error> {
         match self {
             RespValue::Error(string) => Err(Error::Remote(string)),
@@ -92,6 +93,7 @@ impl RespValue {
 pub trait FromResp: Sized {
     /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
     /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
+    #[inline]
     fn from_resp(resp: RespValue) -> Result<Self, Error> {
         Self::from_resp_int(resp.into_result()?)
     }
@@ -100,12 +102,14 @@ pub trait FromResp: Sized {
 }
 
 impl FromResp for RespValue {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<RespValue, Error> {
         Ok(resp)
     }
 }
 
 impl FromResp for String {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<String, Error> {
         match resp {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
@@ -117,6 +121,7 @@ impl FromResp for String {
 }
 
 impl FromResp for Arc<str> {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<Arc<str>, Error> {
         match resp {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into()),
@@ -126,6 +131,7 @@ impl FromResp for Arc<str> {
 }
 
 impl FromResp for Vec<u8> {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<Vec<u8>, Error> {
         match resp {
             RespValue::BulkString(bytes) => Ok(bytes),
@@ -135,6 +141,7 @@ impl FromResp for Vec<u8> {
 }
 
 impl FromResp for i64 {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
         match resp {
             RespValue::Integer(i) => Ok(i),
@@ -148,6 +155,7 @@ macro_rules! impl_fromresp_integers {
         $(
             #[allow(clippy::cast_lossless)]
             impl FromResp for $int_ty {
+                #[inline]
                 fn from_resp_int(resp: RespValue) -> Result<Self, Error> {
                     i64::from_resp_int(resp).and_then(|x| {
                         // $int_ty::max_value() as i64 > 0 should be optimized out. It tests if
@@ -176,6 +184,7 @@ macro_rules! impl_fromresp_integers {
 impl_fromresp_integers!(isize, usize, i32, u32, u64);
 
 impl FromResp for bool {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<bool, Error> {
         i64::from_resp_int(resp).and_then(|x| match x {
             0 => Ok(false),
@@ -189,6 +198,7 @@ impl FromResp for bool {
 }
 
 impl<T: FromResp> FromResp for Option<T> {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<Option<T>, Error> {
         match resp {
             RespValue::Nil => Ok(None),
@@ -198,6 +208,7 @@ impl<T: FromResp> FromResp for Option<T> {
 }
 
 impl<T: FromResp> FromResp for Vec<T> {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<Vec<T>, Error> {
         match resp {
             RespValue::Array(ary) => {
@@ -239,6 +250,7 @@ impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp fo
 }
 
 impl FromResp for () {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<(), Error> {
         match resp {
             RespValue::SimpleString(string) => match string.as_ref() {
@@ -261,6 +273,7 @@ where
     A: FromResp,
     B: FromResp,
 {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<(A, B), Error> {
         match resp {
             RespValue::Array(ary) => {
@@ -291,6 +304,7 @@ where
     B: FromResp,
     C: FromResp,
 {
+    #[inline]
     fn from_resp_int(resp: RespValue) -> Result<(A, B, C), Error> {
         match resp {
             RespValue::Array(ary) => {
@@ -361,6 +375,7 @@ macro_rules! resp_array {
 macro_rules! into_resp {
     ($t:ty, $f:ident) => {
         impl<'a> From<$t> for RespValue {
+            #[inline]
             fn from(from: $t) -> RespValue {
                 from.$f()
             }
@@ -380,6 +395,7 @@ macro_rules! string_into_resp {
 }
 
 impl IntoRespString for String {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.into_bytes())
     }
@@ -387,6 +403,7 @@ impl IntoRespString for String {
 string_into_resp!(String);
 
 impl<'a> IntoRespString for &'a String {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
@@ -394,6 +411,7 @@ impl<'a> IntoRespString for &'a String {
 string_into_resp!(&'a String);
 
 impl<'a> IntoRespString for &'a str {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
@@ -401,6 +419,7 @@ impl<'a> IntoRespString for &'a str {
 string_into_resp!(&'a str);
 
 impl<'a> IntoRespString for &'a [u8] {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.to_vec())
     }
@@ -408,6 +427,7 @@ impl<'a> IntoRespString for &'a [u8] {
 string_into_resp!(&'a [u8]);
 
 impl IntoRespString for Vec<u8> {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self)
     }
@@ -415,6 +435,7 @@ impl IntoRespString for Vec<u8> {
 string_into_resp!(Vec<u8>);
 
 impl IntoRespString for Arc<str> {
+    #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
     }
@@ -432,6 +453,7 @@ macro_rules! integer_into_resp {
 }
 
 impl IntoRespInteger for usize {
+    #[inline]
     fn into_resp_integer(self) -> RespValue {
         RespValue::Integer(self as i64)
     }
