@@ -8,7 +8,7 @@
  * except according to those terms.
  */
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
@@ -18,11 +18,10 @@ use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
 use futures_util::stream::{Fuse, StreamExt};
 
-use crate::resp::FromResp;
 use crate::{
     client::connect::RespConnection,
     error::{self, ConnectionReason},
-    resp,
+    resp::{self, FromResp},
 };
 
 use super::{PubsubEvent, PubsubSink};
@@ -173,35 +172,13 @@ impl PubsubConnectionInner {
                 }
             },
             b"unsubscribe" => {
-                match self.subscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
-                }
-                if self.subscriptions.is_empty() {
-                    return Ok(false);
+                if self.subscriptions.remove(&topic).is_none() {
+                    log::warn!("Received unexpected unsubscribe message: {}", topic)
                 }
             }
             b"punsubscribe" => {
-                match self.psubscriptions.entry(topic) {
-                    Entry::Occupied(entry) => {
-                        entry.remove_entry();
-                    }
-                    Entry::Vacant(vacant) => {
-                        return Err(error::internal(format!(
-                            "Unexpected unsubscribe message: {}",
-                            vacant.key()
-                        )));
-                    }
-                }
-                if self.psubscriptions.is_empty() {
-                    return Ok(false);
+                if self.psubscriptions.remove(&topic).is_none() {
+                    log::warn!("Received unexpected unsubscribe message: {}", topic)
                 }
             }
             b"message" => match self.subscriptions.get(&topic) {
@@ -245,16 +222,35 @@ impl PubsubConnectionInner {
         Ok(true)
     }
 
+    /// Checks whether the conditions are met such that this task should end.
+    /// The task should end when all three conditions are true:
+    /// 1. There are no active or pending subscriptions
+    /// 2. There are no active or pending psubscriptions
+    /// 3. The channel where new subscriptions come from is closed
+    fn should_end(&self) -> bool {
+        self.subscriptions.is_empty()
+            && self.psubscriptions.is_empty()
+            && self.pending_subs.is_empty()
+            && self.pending_psubs.is_empty()
+            && self.out_rx.is_done()
+    }
+
     /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
     fn handle_messages(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
         loop {
             match self.connection.poll_next_unpin(cx) {
-                Poll::Pending => return Ok(true),
+                Poll::Pending => {
+                    // Nothing to do, so lets carry on
+                    return Ok(true);
+                }
                 Poll::Ready(None) => {
-                    if self.subscriptions.is_empty() {
+                    // The Redis connection has closed, so we either:
+                    if self.subscriptions.is_empty() && self.psubscriptions.is_empty() {
+                        // There are no subscriptions, so we stop without failure.
                         return Ok(false);
                     } else {
-                        // This can only happen if the connection is closed server-side
+                        // There are active subscriptions, so we send an error to each of them
+                        // to let them know that the connection has closed.
                         for sub in self.subscriptions.values() {
                             sub.unbounded_send(Err(error::Error::Connection(
                                 ConnectionReason::NotConnected,
@@ -271,12 +267,16 @@ impl PubsubConnectionInner {
                     }
                 }
                 Poll::Ready(Some(Ok(message))) => {
+                    // A valid has message has been received, so lets handle it...
                     let message_result = self.handle_message(message)?;
                     if !message_result {
+                        // Stop if the conditions require it.
                         return Ok(false);
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
+                    // An error occurred from the Redis connection, so we send an error to each of the
+                    // subscriptions to let them know that the connection has errored.
                     for sub in self.subscriptions.values() {
                         sub.unbounded_send(Err(error::unexpected(format!(
                             "Connection is in the process of failing due to: {}",
@@ -303,9 +303,21 @@ impl Future for PubsubConnectionInner {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this_self = self.get_mut();
+
+        // Check the incoming channel for new subscriptions
         this_self.handle_new_subs(cx)?;
+
+        if this_self.should_end() {
+            // There are no current subscriptions, and the channel via which new subscriptions
+            // arrive has closed, so this can now end.
+            return Poll::Ready(Ok(()));
+        }
+
+        // The following is only valid if the result to `should_end` is false.
         this_self.do_flush(cx)?;
+
         let cont = this_self.handle_messages(cx)?;
+
         if cont {
             Poll::Pending
         } else {

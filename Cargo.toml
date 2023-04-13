@@ -31,6 +31,6 @@ with-native-tls = ["native-tls", "tokio-native-tls", "tls"]
 
 
 [dev-dependencies]
-env_logger = "^0.9"
+env_logger = "0.10"
 futures = "^0.3.7"
 tokio = { version = "1.0", features = ["full"] }
