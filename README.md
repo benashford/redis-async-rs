@@ -98,7 +98,7 @@ In the event of a broken connection to the Redis server, this connection will at
 
 #### Example
 
-See an [`examples/pubsub.rs`](examples/pubsub.rs). This will listen on a topic (by default: `test-topic`) and print each message as it arrives. To run this example: `cargo run --example pubsub` then in a separate terminal open `redis-cli` to the same server and publish some messages (e.g. `PUBLISH test-topic TESTING`).
+See an [`examples/subscribe.rs`](examples/subscribe.rs). This will listen on a topic (by default: `test-topic`) and print each message as it arrives. To run this example: `cargo run --example subscribe` then in a separate terminal open `redis-cli` to the same server and publish some messages (e.g. `PUBLISH test-topic TESTING`).
 
 ## Performance
 
