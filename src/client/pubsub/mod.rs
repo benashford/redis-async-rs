@@ -138,6 +138,7 @@ impl PubsubConnection {
                 topic: topic.to_owned(),
                 underlying: rx,
                 con: self.clone(),
+                is_pattern: false,
             }),
             Err(_) => Err(error::internal("Subscription failed, try again later...")),
         }
@@ -154,6 +155,7 @@ impl PubsubConnection {
                 topic: topic.to_owned(),
                 underlying: rx,
                 con: self.clone(),
+                is_pattern: true,
             }),
             Err(_) => Err(error::internal("Subscription failed, try again later...")),
         }
@@ -183,6 +185,7 @@ pub struct PubsubStream {
     topic: String,
     underlying: PubsubStreamInner,
     con: PubsubConnection,
+    is_pattern: bool,
 }
 
 impl Stream for PubsubStream {
@@ -197,7 +200,11 @@ impl Stream for PubsubStream {
 impl Drop for PubsubStream {
     fn drop(&mut self) {
         let topic: &str = self.topic.as_ref();
-        self.con.unsubscribe(topic);
+        if self.is_pattern {
+            self.con.punsubscribe(topic);
+        } else {
+            self.con.unsubscribe(topic);
+        }
     }
 }
 
