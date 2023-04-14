@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.14.2"
+version = "0.15.0"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -19,9 +19,9 @@ native-tls = { version = "0.2", optional = true }
 pin-project = "1.0"
 tokio = { version = "1.0", features = ["rt", "net", "time"] }
 tokio-native-tls = { version = "0.3.0", optional = true }
-tokio-rustls = { version = "0.23.4", optional = true }
+tokio-rustls = { version = "0.24", optional = true }
 tokio-util = { version = "0.7", features = ["codec"] }
-webpki-roots = {version = "0.22.5", optional = true }
+webpki-roots = {version = "0.23", optional = true }
 
 [features]
 default = []
@@ -31,6 +31,6 @@ with-native-tls = ["native-tls", "tokio-native-tls", "tls"]
 
 
 [dev-dependencies]
-env_logger = "^0.9"
+env_logger = "0.10"
 futures = "^0.3.7"
 tokio = { version = "1.0", features = ["full"] }

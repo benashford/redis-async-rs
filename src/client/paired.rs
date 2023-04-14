@@ -297,6 +297,7 @@ impl PairedConnection {
         }
     }
 
+    #[inline]
     pub fn send_and_forget(&self, msg: resp::RespValue) {
         let send_f = self.send::<resp::RespValue>(msg);
         let forget_f = async {
@@ -333,6 +334,7 @@ pub struct SendFuture<T> {
 }
 
 impl<T> SendFuture<T> {
+    #[inline]
     fn new(send_type: impl Into<SendFutureType>) -> Self {
         Self {
             send_type: send_type.into(),
@@ -347,6 +349,7 @@ where
 {
     type Output = Result<T, error::Error>;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.get_mut().send_type {
             SendFutureType::Error(ref mut e) => match e.take() {
