@@ -56,6 +56,20 @@ impl PubsubConnectionInner {
         }
     }
 
+    /// If an unrecoverable error occurs in the inner connection, then we call this to notify all
+    /// subscribers.
+    /// This function sends the error to all subscribers then returns the error itself, as an `Err`
+    /// to enable ergonomic use in a `?` operator.
+    fn fail_all(&self, err: error::Error) -> Result<(), error::Error> {
+        for sender in self.subscriptions.values() {
+            let _ = sender.unbounded_send(Err(err.clone()));
+        }
+        for sender in self.psubscriptions.values() {
+            let _ = sender.unbounded_send(Err(err.clone()));
+        }
+        Err(err)
+    }
+
     /// Returns `true` if data sent, or `false` if stream not ready...
     fn do_send(&mut self, cx: &mut Context, msg: resp::RespValue) -> Result<bool, error::Error> {
         match Pin::new(&mut self.connection).poll_ready(cx) {
@@ -251,18 +265,6 @@ impl PubsubConnectionInner {
                     } else {
                         // There are active subscriptions, so we send an error to each of them
                         // to let them know that the connection has closed.
-                        for sub in self.subscriptions.values() {
-                            sub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
-                        for psub in self.psubscriptions.values() {
-                            psub.unbounded_send(Err(error::Error::Connection(
-                                ConnectionReason::NotConnected,
-                            )))
-                            .unwrap();
-                        }
                         return Err(error::Error::Connection(ConnectionReason::NotConnected));
                     }
                 }
@@ -279,20 +281,6 @@ impl PubsubConnectionInner {
                 Poll::Ready(Some(Err(e))) => {
                     // An error occurred from the Redis connection, so we send an error to each of the
                     // subscriptions to let them know that the connection has errored.
-                    for sub in self.subscriptions.values() {
-                        sub.unbounded_send(Err(error::unexpected(format!(
-                            "Connection is in the process of failing due to: {}",
-                            e
-                        ))))
-                        .unwrap();
-                    }
-                    for psub in self.psubscriptions.values() {
-                        psub.unbounded_send(Err(error::unexpected(format!(
-                            "Connection is in the process of failing due to: {}",
-                            e
-                        ))))
-                        .unwrap();
-                    }
                     return Err(e);
                 }
             }
@@ -307,7 +295,9 @@ impl Future for PubsubConnectionInner {
         let this_self = self.get_mut();
 
         // Check the incoming channel for new subscriptions
-        this_self.handle_new_subs(cx)?;
+        if let Err(e) = this_self.handle_new_subs(cx) {
+            return Poll::Ready(this_self.fail_all(e));
+        }
 
         if this_self.should_end() {
             // There are no current subscriptions, and the channel via which new subscriptions
@@ -316,9 +306,14 @@ impl Future for PubsubConnectionInner {
         }
 
         // The following is only valid if the result to `should_end` is false.
-        this_self.do_flush(cx)?;
+        if let Err(e) = this_self.do_flush(cx) {
+            return Poll::Ready(this_self.fail_all(e));
+        }
 
-        let cont = this_self.handle_messages(cx)?;
+        let cont = match this_self.handle_messages(cx) {
+            Ok(cont) => cont,
+            Err(e) => return Poll::Ready(this_self.fail_all(e)),
+        };
 
         if cont {
             Poll::Pending
