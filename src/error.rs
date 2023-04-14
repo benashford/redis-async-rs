@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2022 Ben Ashford
+ * Copyright 2017-2023 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,19 +10,22 @@
 
 //! Error handling
 
-use std::{error, fmt, io};
+use std::error;
+use std::fmt;
+use std::io;
+use std::sync::Arc;
 
 use futures_channel::mpsc;
 
 use crate::resp;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Error {
     /// A non-specific internal error that prevented an operation from completing
     Internal(String),
 
     /// An IO error occurred
-    IO(io::Error),
+    IO(Arc<io::Error>),
 
     /// A RESP parsing/serialising error occurred
     Resp(String, Option<resp::RespValue>),
@@ -46,7 +49,7 @@ pub enum Error {
     InvalidDnsName,
 
     #[cfg(feature = "with-native-tls")]
-    Tls(native_tls::Error),
+    Tls(Arc<native_tls::Error>),
 }
 
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
@@ -63,7 +66,7 @@ pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
-        Error::IO(err)
+        Error::IO(Arc::new(err))
     }
 }
 
@@ -77,6 +80,8 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Error::IO(err) => Some(err),
+            #[cfg(feature = "with-native-tls")]
+            Error::Tls(err) => Some(err),
             _ => None,
         }
     }
@@ -85,7 +90,7 @@ impl error::Error for Error {
 #[cfg(feature = "with-native-tls")]
 impl From<native_tls::Error> for Error {
     fn from(err: native_tls::Error) -> Error {
-        Error::Tls(err)
+        Error::Tls(Arc::new(err))
     }
 }
 
@@ -118,7 +123,7 @@ impl fmt::Display for Error {
 }
 
 /// Details of a `ConnectionError`
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ConnectionReason {
     /// An attempt to use a connection while it is in the "connecting" state, clients should try
     /// again
