@@ -149,10 +149,13 @@ impl PubsubConnectionInner {
                     ));
                 }
             },
-            _ => {
-                return Err(error::unexpected(
-                    "PUBSUB message should be encoded as an array",
-                ));
+            resp::RespValue::Error(msg) => {
+                return Err(error::unexpected(format!("Error from server: {}", msg)));
+            }
+            other => {
+                return Err(error::unexpected(format!(
+                    "PUBSUB message should be encoded as an array, actual: {other:?}",
+                )));
             }
         };
 
