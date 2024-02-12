@@ -11,7 +11,6 @@
 use std::env;
 
 use futures::{sink::SinkExt, stream::StreamExt};
-
 use redis_async::{client, resp_array};
 
 #[tokio::main]

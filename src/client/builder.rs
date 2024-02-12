@@ -8,7 +8,8 @@
  * except according to those terms.
  */
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error;
 
@@ -25,6 +26,9 @@ pub struct ConnectionBuilder {
     pub(crate) socket_timeout: Option<Duration>,
 }
 
+const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(60);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl ConnectionBuilder {
     pub fn new(host: impl Into<String>, port: u16) -> Result<Self, error::Error> {
         Ok(Self {
@@ -34,8 +38,8 @@ impl ConnectionBuilder {
             password: None,
             #[cfg(feature = "tls")]
             tls: false,
-            socket_keepalive: None,
-            socket_timeout: None,
+            socket_keepalive: Some(DEFAULT_KEEPALIVE),
+            socket_timeout: Some(DEFAULT_TIMEOUT),
         })
     }
 
@@ -58,14 +62,14 @@ impl ConnectionBuilder {
     }
 
     /// Set the socket keepalive duration
-    pub fn socket_keepalive(&mut self, duration: Duration) -> &mut Self {
-        self.socket_keepalive = Some(duration);
+    pub fn socket_keepalive(&mut self, duration: Option<Duration>) -> &mut Self {
+        self.socket_keepalive = duration;
         self
     }
 
     /// Set the socket timeout duration
-    pub fn socket_timeout(&mut self, duration: Duration) -> &mut Self {
-        self.socket_timeout = Some(duration);
+    pub fn socket_timeout(&mut self, duration: Option<Duration>) -> &mut Self {
+        self.socket_timeout = duration;
         self
     }
 }

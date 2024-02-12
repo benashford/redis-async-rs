@@ -170,7 +170,12 @@ pub async fn connect_tls(
 }
 
 #[cfg(feature = "with-native-tls")]
-pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+pub async fn connect_tls(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, error::Error> {
     let cx = native_tls::TlsConnector::builder().build()?;
     let cx = tokio_native_tls::TlsConnector::from(cx);
 
@@ -182,6 +187,7 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
                 error::ConnectionReason::ConnectionFailed,
             ))?;
     let tcp_stream = TcpStream::connect(addr).await?;
+    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
     let stream = cx.connect(host, tcp_stream).await?;
 
     Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
