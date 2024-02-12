@@ -149,6 +149,7 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
                 error::ConnectionReason::ConnectionFailed,
             ))?;
     let tcp_stream = TcpStream::connect(addr).await?;
+    apply_keepalive(&tcp_stream, DEFAULT_KEEPALIVE_DURATION)?;
 
     let stream = connector
         .connect(
@@ -227,7 +228,8 @@ fn apply_keepalive(stream: &TcpStream, interval: Duration) -> Result<(), error::
 
     let keep_alive = socket2::TcpKeepalive::new()
         .with_time(interval)
-        .with_interval(interval);
+        .with_interval(interval)
+        .with_retries(1);
 
     sock_ref.set_tcp_keepalive(&keep_alive)?;
 
