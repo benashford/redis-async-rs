@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,6 +7,8 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
+
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use pin_project::pin_project;
@@ -110,13 +112,24 @@ pub type RespConnection = Framed<RespConnectionInner, RespCodec>;
 ///
 /// But since most Redis usages involve issue commands that result in one
 /// single result, this library also implements `paired_connect`.
-pub async fn connect(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+pub async fn connect(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
+    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
     Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
 }
 
 #[cfg(feature = "with-rustls")]
-pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+pub async fn connect_tls(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, error::Error> {
     use std::sync::Arc;
     use tokio_rustls::{
         rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore},
@@ -124,7 +137,7 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
     };
 
     let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -144,6 +157,7 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
                 error::ConnectionReason::ConnectionFailed,
             ))?;
     let tcp_stream = TcpStream::connect(addr).await?;
+    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
 
     let stream = connector
         .connect(
@@ -156,7 +170,12 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
 }
 
 #[cfg(feature = "with-native-tls")]
-pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error::Error> {
+pub async fn connect_tls(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, error::Error> {
     let cx = native_tls::TlsConnector::builder().build()?;
     let cx = tokio_native_tls::TlsConnector::from(cx);
 
@@ -168,6 +187,7 @@ pub async fn connect_tls(host: &str, port: u16) -> Result<RespConnection, error:
                 error::ConnectionReason::ConnectionFailed,
             ))?;
     let tcp_stream = TcpStream::connect(addr).await?;
+    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
     let stream = cx.connect(host, tcp_stream).await?;
 
     Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
@@ -179,15 +199,17 @@ pub async fn connect_with_auth(
     username: Option<&str>,
     password: Option<&str>,
     #[allow(unused_variables)] tls: bool,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
 ) -> Result<RespConnection, error::Error> {
     #[cfg(feature = "tls")]
     let mut connection = if tls {
-        connect_tls(host, port).await?
+        connect_tls(host, port, socket_keepalive, socket_timeout).await?
     } else {
-        connect(host, port).await?
+        connect(host, port, socket_keepalive, socket_timeout).await?
     };
     #[cfg(not(feature = "tls"))]
-    let mut connection = connect(host, port).await?;
+    let mut connection = connect(host, port, socket_keepalive, socket_timeout).await?;
 
     if let Some(password) = password {
         let mut auth = resp_array!["AUTH"];
@@ -216,6 +238,30 @@ pub async fn connect_with_auth(
     Ok(connection)
 }
 
+/// Apply a custom keep-alive value to the connection
+fn apply_keepalive_and_timeouts(
+    stream: &TcpStream,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<(), error::Error> {
+    let sock_ref = socket2::SockRef::from(stream);
+
+    if let Some(interval) = socket_keepalive {
+        let keep_alive = socket2::TcpKeepalive::new()
+            .with_time(interval)
+            .with_interval(interval)
+            .with_retries(1);
+        sock_ref.set_tcp_keepalive(&keep_alive)?;
+    }
+
+    if let Some(timeout) = socket_timeout {
+        sock_ref.set_read_timeout(Some(timeout))?;
+        sock_ref.set_write_timeout(Some(timeout))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use futures_util::{
@@ -227,7 +273,7 @@ mod test {
 
     #[tokio::test]
     async fn can_connect() {
-        let mut connection = super::connect("127.0.0.1", 6379)
+        let mut connection = super::connect("127.0.0.1", 6379, None, None)
             .await
             .expect("Cannot connect");
         connection
@@ -246,7 +292,7 @@ mod test {
 
     #[tokio::test]
     async fn complex_test() {
-        let mut connection = super::connect("127.0.0.1", 6379)
+        let mut connection = super::connect("127.0.0.1", 6379, None, None)
             .await
             .expect("Cannot connect");
         let mut ops = Vec::new();

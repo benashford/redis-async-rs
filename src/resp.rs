@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2023 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -767,7 +767,7 @@ mod tests {
 
         let vals = vec![String::from("a"), String::from("b")];
         #[allow(clippy::needless_borrow)]
-        let resp_object = resp_array!["RPUSH", "xyz"].append(&vals);
+        let resp_object = resp_array!["RPUSH", "xyz"].append(vals);
         let bytes = obj_to_bytes(resp_object);
         assert_eq!(
             &b"*4\r\n$5\r\nRPUSH\r\n$3\r\nxyz\r\n$1\r\na\r\n$1\r\nb\r\n"[..],

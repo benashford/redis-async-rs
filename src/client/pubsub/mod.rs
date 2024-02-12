@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2023 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -14,6 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
@@ -59,11 +60,22 @@ async fn inner_conn_fn(
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
     tls: bool,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
     let username = username.as_deref();
     let password = password.as_deref();
 
-    let connection = connect_with_auth(&host, port, username, password, tls).await?;
+    let connection = connect_with_auth(
+        &host,
+        port,
+        username,
+        password,
+        tls,
+        socket_keepalive,
+        socket_timeout,
+    )
+    .await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     tokio::spawn(async {
         match PubsubConnectionInner::new(connection, out_rx).await {
@@ -87,13 +99,23 @@ impl ConnectionBuilder {
         let host = self.host.clone();
         let port = self.port;
 
+        let socket_keepalive = self.socket_keepalive;
+        let socket_timeout = self.socket_timeout;
+
         let reconnecting_f = reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
                 con.unbounded_send(act).map_err(|e| e.into())
             },
             move || {
-                let con_f =
-                    inner_conn_fn(host.clone(), port, username.clone(), password.clone(), tls);
+                let con_f = inner_conn_fn(
+                    host.clone(),
+                    port,
+                    username.clone(),
+                    password.clone(),
+                    tls,
+                    socket_keepalive,
+                    socket_timeout,
+                );
                 Box::pin(con_f)
             },
         );
