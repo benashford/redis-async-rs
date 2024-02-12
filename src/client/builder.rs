@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 Ben Ashford
+ * Copyright 2020-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,7 +8,7 @@
  * except according to those terms.
  */
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::error;
 
@@ -21,6 +21,8 @@ pub struct ConnectionBuilder {
     pub(crate) password: Option<Arc<str>>,
     #[cfg(feature = "tls")]
     pub(crate) tls: bool,
+    pub(crate) socket_keepalive: Option<Duration>,
+    pub(crate) socket_timeout: Option<Duration>,
 }
 
 impl ConnectionBuilder {
@@ -32,6 +34,8 @@ impl ConnectionBuilder {
             password: None,
             #[cfg(feature = "tls")]
             tls: false,
+            socket_keepalive: None,
+            socket_timeout: None,
         })
     }
 
@@ -50,6 +54,18 @@ impl ConnectionBuilder {
     #[cfg(feature = "tls")]
     pub fn tls(&mut self) -> &mut Self {
         self.tls = true;
+        self
+    }
+
+    /// Set the socket keepalive duration
+    pub fn socket_keepalive(&mut self, duration: Duration) -> &mut Self {
+        self.socket_keepalive = Some(duration);
+        self
+    }
+
+    /// Set the socket timeout duration
+    pub fn socket_timeout(&mut self, duration: Duration) -> &mut Self {
+        self.socket_timeout = Some(duration);
         self
     }
 }

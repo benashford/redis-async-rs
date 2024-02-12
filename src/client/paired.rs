@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -15,6 +15,7 @@ use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use futures_channel::{mpsc, oneshot};
 use futures_sink::Sink;
@@ -210,10 +211,21 @@ async fn inner_conn_fn(
     username: Option<Arc<str>>,
     password: Option<Arc<str>>,
     tls: bool,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
-    let connection = connect_with_auth(&host, port, username, password, tls).await?;
+    let connection = connect_with_auth(
+        &host,
+        port,
+        username,
+        password,
+        tls,
+        socket_keepalive,
+        socket_timeout,
+    )
+    .await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
     tokio::spawn(paired_connection_inner);
@@ -236,8 +248,19 @@ impl ConnectionBuilder {
         #[cfg(not(feature = "tls"))]
         let tls = false;
 
+        let socket_keepalive = self.socket_keepalive;
+        let socket_timeout = self.socket_timeout;
+
         let conn_fn = move || {
-            let con_f = inner_conn_fn(host.clone(), port, username.clone(), password.clone(), tls);
+            let con_f = inner_conn_fn(
+                host.clone(),
+                port,
+                username.clone(),
+                password.clone(),
+                tls,
+                socket_keepalive,
+                socket_timeout,
+            );
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };
 

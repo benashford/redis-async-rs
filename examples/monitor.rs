@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2022 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -21,12 +21,12 @@ async fn main() {
         .unwrap_or_else(|| "127.0.0.1".to_string());
 
     #[cfg(not(feature = "tls"))]
-    let mut connection = client::connect(&addr, 6379)
+    let mut connection = client::connect(&addr, 6379, None, None)
         .await
         .expect("Cannot connect to Redis");
 
     #[cfg(feature = "tls")]
-    let mut connection = client::connect_tls(&addr, 6379)
+    let mut connection = client::connect_tls(&addr, 6379, None, None)
         .await
         .expect("Cannot connect to Redis");
 
