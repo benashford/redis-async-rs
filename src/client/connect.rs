@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 Ben Ashford
+ * Copyright 2017-2024 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,6 +7,8 @@
  * option. This file may not be copied, modified, or distributed
  * except according to those terms.
  */
+
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use pin_project::pin_project;
@@ -95,6 +97,8 @@ impl AsyncRead for RespConnectionInner {
 
 pub type RespConnection = Framed<RespConnectionInner, RespCodec>;
 
+const DEFAULT_KEEPALIVE_DURATION: Duration = Duration::from_secs(5);
+
 /// Connect to a Redis server and return a Future that resolves to a
 /// `RespConnection` for reading and writing asynchronously.
 ///
@@ -112,6 +116,7 @@ pub type RespConnection = Framed<RespConnectionInner, RespCodec>;
 /// single result, this library also implements `paired_connect`.
 pub async fn connect(host: &str, port: u16) -> Result<RespConnection, error::Error> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
+    apply_keepalive(&tcp_stream, DEFAULT_KEEPALIVE_DURATION)?;
     Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
 }
 
@@ -214,6 +219,19 @@ pub async fn connect_with_auth(
     }
 
     Ok(connection)
+}
+
+/// Apply a custom keep-alive value to the connection
+fn apply_keepalive(stream: &TcpStream, interval: Duration) -> Result<(), error::Error> {
+    let sock_ref = socket2::SockRef::from(stream);
+
+    let keep_alive = socket2::TcpKeepalive::new()
+        .with_time(interval)
+        .with_interval(interval);
+
+    sock_ref.set_tcp_keepalive(&keep_alive)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
