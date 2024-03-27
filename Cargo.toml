@@ -1,6 +1,6 @@
 [package]
 name = "redis-async"
-version = "0.17.0"
+version = "0.17.1"
 authors = ["Ben Ashford <benashford@users.noreply.github.com>"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -17,7 +17,7 @@ futures-util = { version = "^0.3.7", features = ["sink"] }
 log = "^0.4.11"
 native-tls = { version = "0.2", optional = true }
 pin-project = "1.0"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1.0", features = ["rt", "net", "time"] }
 tokio-native-tls = { version = "0.3.0", optional = true }
 tokio-rustls = { version = "0.24", optional = true }

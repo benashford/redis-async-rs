@@ -249,8 +249,22 @@ fn apply_keepalive_and_timeouts(
     if let Some(interval) = socket_keepalive {
         let keep_alive = socket2::TcpKeepalive::new()
             .with_time(interval)
-            .with_interval(interval)
-            .with_retries(1);
+            .with_interval(interval);
+        // Not windows
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "fuchsia",
+            target_os = "illumos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "netbsd",
+            target_os = "tvos",
+            target_os = "watchos",
+        ))]
+        let keep_alive = keep_alive.with_retries(1);
         sock_ref.set_tcp_keepalive(&keep_alive)?;
     }
 
