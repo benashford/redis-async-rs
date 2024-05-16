@@ -132,20 +132,13 @@ pub async fn connect_tls(
 ) -> Result<RespConnection, error::Error> {
     use std::sync::Arc;
     use tokio_rustls::{
-        rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore},
+        rustls::{ClientConfig, RootCertStore},
         TlsConnector,
     };
 
     let mut root_store = RootCertStore::empty();
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let config = ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let connector = TlsConnector::from(Arc::new(config));
@@ -161,7 +154,8 @@ pub async fn connect_tls(
 
     let stream = connector
         .connect(
-            host.try_into()
+            String::from(host)
+                .try_into()
                 .map_err(|_err| error::Error::InvalidDnsName)?,
             tcp_stream,
         )
