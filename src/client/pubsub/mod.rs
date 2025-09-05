@@ -423,6 +423,7 @@ mod test {
 
         // Get the next message for topic 1
         let result1 = topic_1.next().await;
+        println!("{:?}", result1);
         assert!(result1.is_none());
 
         // Resubscribe to topic 1
