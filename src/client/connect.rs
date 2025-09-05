@@ -24,6 +24,7 @@ use crate::{
 };
 
 #[pin_project(project = RespConnectionInnerProj)]
+#[expect(clippy::large_enum_variant, reason = "will only be enabled if selected, and isn't moved once built")]
 pub enum RespConnectionInner {
     #[cfg(feature = "with-rustls")]
     Tls {

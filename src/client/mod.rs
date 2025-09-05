@@ -13,11 +13,11 @@
 //! This contains three main functions that return three specific types of client:
 //!
 //! * `connect` returns a pair of `Stream` and `Sink`, clients can write RESP messages to the
-//! `Sink` and read RESP messages from the `Stream`. Pairing requests to responses is up to the
-//! client.  This is intended to be a low-level interface from which more user-friendly interfaces
-//! can be built.
+//!   `Sink` and read RESP messages from the `Stream`. Pairing requests to responses is up to the
+//!   client.  This is intended to be a low-level interface from which more user-friendly interfaces
+//!   can be built.
 //! * `paired_connect` is used for most of the standard Redis commands, where one request results
-//! in one response.
+//!   in one response.
 //! * `pubsub_connect` is used for Redis's PUBSUB functionality.
 
 pub mod connect;
