@@ -234,8 +234,10 @@ impl Drop for PubsubStream {
 #[cfg(test)]
 mod test {
     use std::mem;
+    use std::time::Duration;
 
     use futures::{try_join, StreamExt, TryStreamExt};
+    use tokio::time::sleep;
 
     use crate::{client, resp};
 
@@ -357,6 +359,9 @@ mod test {
         // Unsubscribe from topic 2
         pubsub.unsubscribe(UNSUBSCRIBE_TOPIC_2);
 
+        // Ensure unsubscription is processed
+        sleep(Duration::from_millis(1000)).await;
+
         // Drop the subscription for topic 3
         mem::drop(topic_3);
 
@@ -414,6 +419,9 @@ mod test {
         // Unsubscribe from topic 1
         pubsub.unsubscribe(RESUBSCRIBE_TOPIC);
 
+        // Yes, I know, just testing...
+        sleep(Duration::from_millis(1000)).await;
+
         // Send some more messages
         paired.send_and_forget(resp_array![
             "PUBLISH",
@@ -423,7 +431,6 @@ mod test {
 
         // Get the next message for topic 1
         let result1 = topic_1.next().await;
-        println!("{:?}", result1);
         assert!(result1.is_none());
 
         // Resubscribe to topic 1
