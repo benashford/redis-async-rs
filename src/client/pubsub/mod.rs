@@ -551,6 +551,9 @@ mod test {
             "test-message-1.5"
         ]);
 
+        // Allow for the messages to be sent
+        sleep(Duration::from_millis(1000)).await;
+
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_1);
 
         let result1 = topic_1
