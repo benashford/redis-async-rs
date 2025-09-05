@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2024 Ben Ashford
+ * Copyright 2017-2025 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -118,6 +118,7 @@ impl ConnectionBuilder {
                 );
                 Box::pin(con_f)
             },
+            self.reconnect_options,
         );
         reconnecting_f.map_ok(|con| PubsubConnection {
             out_tx_c: Arc::new(con),
