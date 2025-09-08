@@ -215,9 +215,10 @@ where
         let connection_f = async move {
             let mut connection_result = Err(error::internal("Initial connection failed"));
             for i in 0..reconnect.0.reconnect_options.max_connection_attempts {
+                let connection_count = i + 1;
                 log::debug!(
                     "Connection attempt {}/{}",
-                    i + 1,
+                    connection_count,
                     reconnect.0.reconnect_options.max_connection_attempts
                 );
                 connection_result = match timeout(
@@ -230,7 +231,7 @@ where
                     Err(_) => Err(error::internal(format!(
                         "Connection timed-out after {} seconds",
                         reconnect.0.reconnect_options.connection_timeout.as_secs()
-                            * reconnect.0.reconnect_options.max_connection_attempts
+                            * connection_count
                     ))),
                 };
                 if connection_result.is_ok() {
