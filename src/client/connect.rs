@@ -24,6 +24,13 @@ use crate::{
 };
 
 #[pin_project(project = RespConnectionInnerProj)]
+#[cfg_attr(
+    any(feature = "with-rustls", feature = "with-native-tls"),
+    expect(
+        clippy::large_enum_variant,
+        reason = "will only be enabled if selected, and isn't moved once built"
+    )
+)]
 pub enum RespConnectionInner {
     #[cfg(feature = "with-rustls")]
     Tls {

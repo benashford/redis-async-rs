@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2024 Ben Ashford
+ * Copyright 2017-2025 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -118,6 +118,7 @@ impl ConnectionBuilder {
                 );
                 Box::pin(con_f)
             },
+            self.reconnect_options,
         );
         reconnecting_f.map_ok(|con| PubsubConnection {
             out_tx_c: Arc::new(con),
@@ -233,8 +234,10 @@ impl Drop for PubsubStream {
 #[cfg(test)]
 mod test {
     use std::mem;
+    use std::time::Duration;
 
     use futures::{try_join, StreamExt, TryStreamExt};
+    use tokio::time::sleep;
 
     use crate::{client, resp};
 
@@ -356,6 +359,9 @@ mod test {
         // Unsubscribe from topic 2
         pubsub.unsubscribe(UNSUBSCRIBE_TOPIC_2);
 
+        // Ensure unsubscription is processed
+        sleep(Duration::from_millis(1000)).await;
+
         // Drop the subscription for topic 3
         mem::drop(topic_3);
 
@@ -412,6 +418,9 @@ mod test {
 
         // Unsubscribe from topic 1
         pubsub.unsubscribe(RESUBSCRIBE_TOPIC);
+
+        // Yes, I know, just testing...
+        sleep(Duration::from_millis(1000)).await;
 
         // Send some more messages
         paired.send_and_forget(resp_array![
@@ -541,6 +550,9 @@ mod test {
             UNSUBSCRIBE_TWICE_TOPIC_1,
             "test-message-1.5"
         ]);
+
+        // Allow for the messages to be sent
+        sleep(Duration::from_millis(1000)).await;
 
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_1);
 

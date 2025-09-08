@@ -182,9 +182,9 @@ macro_rules! impl_fromresp_integers {
                     i64::from_resp_int(resp).and_then(|x| {
                         // $int_ty::max_value() as i64 > 0 should be optimized out. It tests if
                         // the target integer type needs an "upper bounds" check
-                        if x < ($int_ty::min_value() as i64)
-                            || ($int_ty::max_value() as i64 > 0
-                                && x > ($int_ty::max_value() as i64))
+                        if x < ($int_ty::MIN as i64)
+                            || ($int_ty::MAX as i64 > 0
+                                && x > ($int_ty::MAX as i64))
                         {
                             Err(error::resp(
                                 concat!(
@@ -424,7 +424,7 @@ impl IntoRespString for String {
 }
 string_into_resp!(String);
 
-impl<'a> IntoRespString for &'a String {
+impl IntoRespString for &String {
     #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
@@ -432,7 +432,7 @@ impl<'a> IntoRespString for &'a String {
 }
 string_into_resp!(&'a String);
 
-impl<'a> IntoRespString for &'a str {
+impl IntoRespString for &str {
     #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.as_bytes().into())
@@ -440,7 +440,7 @@ impl<'a> IntoRespString for &'a str {
 }
 string_into_resp!(&'a str);
 
-impl<'a> IntoRespString for &'a [u8] {
+impl IntoRespString for &[u8] {
     #[inline]
     fn into_resp_string(self) -> RespValue {
         RespValue::BulkString(self.to_vec())
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_integer_overflow() {
-        let resp_object = RespValue::Integer(i64::max_value());
+        let resp_object = RespValue::Integer(i64::MAX);
         let res = i32::from_resp(resp_object);
         assert!(res.is_err());
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2024 Ben Ashford
+ * Copyright 2020-2025 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::error;
+use crate::{error, reconnect::ReconnectOptions};
 
 #[derive(Debug)]
 /// Connection builder
@@ -20,6 +20,7 @@ pub struct ConnectionBuilder {
     pub(crate) port: u16,
     pub(crate) username: Option<Arc<str>>,
     pub(crate) password: Option<Arc<str>>,
+    pub(crate) reconnect_options: ReconnectOptions,
     #[cfg(feature = "tls")]
     pub(crate) tls: bool,
     pub(crate) socket_keepalive: Option<Duration>,
@@ -36,6 +37,7 @@ impl ConnectionBuilder {
             port,
             username: None,
             password: None,
+            reconnect_options: ReconnectOptions::default(),
             #[cfg(feature = "tls")]
             tls: false,
             socket_keepalive: Some(DEFAULT_KEEPALIVE),
@@ -70,6 +72,18 @@ impl ConnectionBuilder {
     /// Set the socket timeout duration
     pub fn socket_timeout(&mut self, duration: Option<Duration>) -> &mut Self {
         self.socket_timeout = duration;
+        self
+    }
+
+    /// Set the reconnect timeout
+    pub fn reconnect_timeout(&mut self, duration: Duration) -> &mut Self {
+        self.reconnect_options.connection_timeout = duration;
+        self
+    }
+
+    /// Set the number of reconnection attempts
+    pub fn reconnect_attempts(&mut self, attempts: u64) -> &mut Self {
+        self.reconnect_options.max_connection_attempts = attempts;
         self
     }
 }

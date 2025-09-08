@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2024 Ben Ashford
+ * Copyright 2017-2025 Ben Ashford
  *
  * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
  * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -264,7 +264,7 @@ impl ConnectionBuilder {
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };
 
-        let reconnecting_con = reconnect(work_fn, conn_fn);
+        let reconnecting_con = reconnect(work_fn, conn_fn, self.reconnect_options);
         reconnecting_con.map_ok(|con| PairedConnection {
             out_tx_c: Arc::new(con),
         })
