@@ -34,3 +34,17 @@ with-native-tls = ["native-tls", "tokio-native-tls", "tls"]
 env_logger = "0.11"
 futures = "^0.3.7"
 tokio = { version = "1.36", features = ["full"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio"] }
+
+[[bench]]
+name = "single_threaded"
+harness = false
+
+[[bench]]
+name = "multi_threaded"
+harness = false
+
+[[bench]]
+name = "pipelined"
+harness = false
