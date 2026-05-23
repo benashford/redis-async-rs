@@ -17,7 +17,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_channel::{mpsc, oneshot};
-use futures_util::{future::TryFutureExt, stream::{Stream, StreamExt}};
+use futures_util::{
+    future::TryFutureExt,
+    stream::{Stream, StreamExt},
+};
 
 use super::{connect::connect_with_auth, ConnectionBuilder};
 
@@ -63,8 +66,8 @@ async fn inner_conn_fn(
     let (responder_tx, mut responder_rx) = mpsc::unbounded::<Responder>();
 
     tokio::spawn(async move {
-        use futures_util::sink::SinkExt;
         use futures_util::future::poll_fn;
+        use futures_util::sink::SinkExt;
 
         while let Some((first_msg, first_tx)) = out_rx.next().await {
             if let Err(e) = sink.feed(first_msg).await {
@@ -78,15 +81,14 @@ async fn inner_conn_fn(
             // Pull and feed any other immediately available messages
             loop {
                 let mut next_payload = None;
-                poll_fn(|cx| {
-                    match Pin::new(&mut out_rx).poll_next(cx) {
-                        Poll::Ready(Some(item)) => {
-                            next_payload = Some(item);
-                            Poll::Ready(())
-                        }
-                        _ => Poll::Ready(()),
+                poll_fn(|cx| match Pin::new(&mut out_rx).poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        next_payload = Some(item);
+                        Poll::Ready(())
                     }
-                }).await;
+                    _ => Poll::Ready(()),
+                })
+                .await;
 
                 if let Some((msg, tx)) = next_payload {
                     if let Err(e) = sink.feed(msg).await {

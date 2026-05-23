@@ -34,13 +34,19 @@ fn event_to_msg(
 ) -> Result<resp::RespValue, ()> {
     match event {
         PubsubEvent::Subscribe(topic, sender, signal) => {
-            if pending_tx.unbounded_send(PendingSub::Sub(topic.clone(), sender, signal)).is_err() {
+            if pending_tx
+                .unbounded_send(PendingSub::Sub(topic.clone(), sender, signal))
+                .is_err()
+            {
                 return Err(());
             }
             Ok(resp_array!["SUBSCRIBE", topic])
         }
         PubsubEvent::Psubscribe(topic, sender, signal) => {
-            if pending_tx.unbounded_send(PendingSub::Psub(topic.clone(), sender, signal)).is_err() {
+            if pending_tx
+                .unbounded_send(PendingSub::Psub(topic.clone(), sender, signal))
+                .is_err()
+            {
                 return Err(());
             }
             Ok(resp_array!["PSUBSCRIBE", topic])
@@ -60,8 +66,8 @@ pub(crate) async fn run_pubsub(
     // Writer Task
     let mut writer_rx = out_rx;
     let writer_handle = tokio::spawn(async move {
-        use futures_util::sink::SinkExt;
         use futures_util::future::poll_fn;
+        use futures_util::sink::SinkExt;
 
         while let Some(event) = writer_rx.next().await {
             let msg = match event_to_msg(event, &pending_tx) {
@@ -77,15 +83,14 @@ pub(crate) async fn run_pubsub(
             let mut broke = false;
             loop {
                 let mut next_event = None;
-                poll_fn(|cx| {
-                    match Pin::new(&mut writer_rx).poll_next(cx) {
-                        Poll::Ready(Some(item)) => {
-                            next_event = Some(item);
-                            Poll::Ready(())
-                        }
-                        _ => Poll::Ready(()),
+                poll_fn(|cx| match Pin::new(&mut writer_rx).poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        next_event = Some(item);
+                        Poll::Ready(())
                     }
-                }).await;
+                    _ => Poll::Ready(()),
+                })
+                .await;
 
                 if let Some(event) = next_event {
                     match event_to_msg(event, &pending_tx) {
