@@ -5,7 +5,7 @@ description: Follow these steps before declaring the work as "done".
 
 # Definition of Done (DoD)
 
-Before marking any task as complete or concluding your work, you MUST run and pass the following verification steps locally. These steps match the GitHub Actions CI workflow configured in [.github/workflows/rust.yml](file:///Users/benashford/.gemini/antigravity/worktrees/redis-async-rs/setup-agent-dev-standards/.github/workflows/rust.yml).
+Before marking any task as complete or concluding your work, you MUST run and pass the following verification steps locally. These steps match the GitHub Actions CI workflow configured in [.github/workflows/rust.yml](../../.github/workflows/rust.yml).
 
 ### 1. Build Verification
 Ensure the codebase compiles successfully:
