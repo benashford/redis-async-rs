@@ -144,7 +144,7 @@ async fn inner_conn_fn(
                             }
                         }
                         Some(Err(e)) => {
-                            fail_all(&mut waiting, e.into());
+                            fail_all(&mut waiting, e);
                             return;
                         }
                         None => {

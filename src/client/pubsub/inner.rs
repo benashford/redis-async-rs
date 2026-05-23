@@ -297,8 +297,8 @@ pub(crate) async fn run_pubsub(
                         }
                     }
                     Some(Err(e)) => {
-                        fail_all(&subscriptions, &psubscriptions, e.clone().into());
-                        return Err(e.into());
+                        fail_all(&subscriptions, &psubscriptions, e.clone());
+                        return Err(e);
                     }
                     None => {
                         if !subscriptions.is_empty() || !psubscriptions.is_empty() {
