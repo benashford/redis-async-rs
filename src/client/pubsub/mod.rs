@@ -533,18 +533,14 @@ mod test {
             UNSUBSCRIBE_TWICE_TOPIC_1,
             "test-message-1"
         ]);
-        paired.send_and_forget(resp_array![
-            "PUBLISH",
-            UNSUBSCRIBE_TWICE_TOPIC_2,
-            "test-message-2"
-        ]);
-
-        let result2 = topic_2
-            .next()
+        let _: usize = paired
+            .send(resp_array![
+                "PUBLISH",
+                UNSUBSCRIBE_TWICE_TOPIC_2,
+                "test-message-2"
+            ])
             .await
-            .expect("Cannot get next value")
-            .expect("Cannot get next value");
-        assert_eq!(result2, "test-message-2".into());
+            .expect("Cannot publish");
 
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
@@ -573,6 +569,13 @@ mod test {
             .expect("Cannot get next value")
             .expect("Cannot get next value");
         assert_eq!(result1, "test-message-1.5".into());
+
+        let result2 = topic_2
+            .next()
+            .await
+            .expect("Cannot get next value")
+            .expect("Cannot get next value");
+        assert_eq!(result2, "test-message-2".into());
 
         let result1 = topic_1.next().await;
         assert!(result1.is_none());
