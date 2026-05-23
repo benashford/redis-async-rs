@@ -70,6 +70,12 @@ impl From<io::Error> for Error {
     }
 }
 
+impl From<std::convert::Infallible> for Error {
+    fn from(err: std::convert::Infallible) -> Error {
+        match err {}
+    }
+}
+
 impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
     fn from(err: mpsc::TrySendError<T>) -> Error {
         Error::Unexpected(format!("Cannot write to channel: {}", err))

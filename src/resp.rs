@@ -50,7 +50,7 @@ pub enum RespValue {
 
 impl RespValue {
     #[inline]
-    fn into_result(self) -> Result<RespValue, Error> {
+    pub(crate) fn into_result(self) -> Result<RespValue, Error> {
         match self {
             RespValue::Error(string) => Err(Error::Remote(string)),
             x => Ok(x),
@@ -108,78 +108,68 @@ impl fmt::Debug for RespValue {
     }
 }
 
-/// A trait to be implemented for every time which can be read from a RESP value.
-///
-/// Implementing this trait on a type means that type becomes a valid return type for calls such as `send` on
-/// `client::PairedConnection`
-pub trait FromResp: Sized {
-    /// Return a `Result` containing either `Self` or `Error`.  Errors can occur due to either: a) the particular
-    /// `RespValue` being incompatible with the required type, or b) a remote Redis error occuring.
-    #[inline]
-    fn from_resp(resp: RespValue) -> Result<Self, Error> {
-        Self::from_resp_int(resp.into_result()?)
-    }
 
-    fn from_resp_int(resp: RespValue) -> Result<Self, Error>;
-}
 
-impl FromResp for RespValue {
-    #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<RespValue, Error> {
-        Ok(resp)
-    }
-}
+impl TryFrom<RespValue> for String {
+    type Error = Error;
 
-impl FromResp for String {
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<String, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<String, Error> {
+        match resp.into_result()? {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
             RespValue::Integer(i) => Ok(i.to_string()),
             RespValue::SimpleString(string) => Ok(string),
-            _ => Err(error::resp("Cannot convert into a string", resp)),
+            other => Err(error::resp("Cannot convert into a string", other)),
         }
     }
 }
 
-impl FromResp for Arc<str> {
+impl TryFrom<RespValue> for Arc<str> {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<Arc<str>, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<Arc<str>, Error> {
+        match resp.into_result()? {
             RespValue::BulkString(ref bytes) => Ok(String::from_utf8_lossy(bytes).into()),
-            _ => Err(error::resp("Cannot convert into a Arc<str>", resp)),
+            other => Err(error::resp("Cannot convert into a Arc<str>", other)),
         }
     }
 }
 
-impl FromResp for Vec<u8> {
+impl TryFrom<RespValue> for Vec<u8> {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<Vec<u8>, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<Vec<u8>, Error> {
+        match resp.into_result()? {
             RespValue::BulkString(bytes) => Ok(bytes),
-            _ => Err(error::resp("Not a bulk string", resp)),
+            other => Err(error::resp("Not a bulk string", other)),
         }
     }
 }
 
-impl FromResp for i64 {
+impl TryFrom<RespValue> for i64 {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<i64, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<i64, Error> {
+        match resp.into_result()? {
             RespValue::Integer(i) => Ok(i),
-            _ => Err(error::resp("Cannot be converted into an i64", resp)),
+            other => Err(error::resp("Cannot be converted into an i64", other)),
         }
     }
 }
 
-macro_rules! impl_fromresp_integers {
+macro_rules! impl_tryfrom_integers {
     ($($int_ty:ident),* $(,)*) => {
         $(
             #[allow(clippy::cast_lossless)]
-            impl FromResp for $int_ty {
+            impl TryFrom<RespValue> for $int_ty {
+                type Error = Error;
+
                 #[inline]
-                fn from_resp_int(resp: RespValue) -> Result<Self, Error> {
-                    i64::from_resp_int(resp).and_then(|x| {
+                fn try_from(resp: RespValue) -> Result<Self, Self::Error> {
+                    i64::try_from(resp).and_then(|x| {
                         // $int_ty::max_value() as i64 > 0 should be optimized out. It tests if
                         // the target integer type needs an "upper bounds" check
                         if x < ($int_ty::MIN as i64)
@@ -203,12 +193,14 @@ macro_rules! impl_fromresp_integers {
     };
 }
 
-impl_fromresp_integers!(isize, usize, i32, u32, u64);
+impl_tryfrom_integers!(isize, usize, i32, u32, u64);
 
-impl FromResp for bool {
+impl TryFrom<RespValue> for bool {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<bool, Error> {
-        i64::from_resp_int(resp).and_then(|x| match x {
+    fn try_from(resp: RespValue) -> Result<bool, Error> {
+        i64::try_from(resp).and_then(|x| match x {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(error::resp(
@@ -219,42 +211,49 @@ impl FromResp for bool {
     }
 }
 
-impl<T: FromResp> FromResp for Option<T> {
+impl<T: TryFrom<RespValue, Error = Error>> TryFrom<RespValue> for Option<T> {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<Option<T>, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<Option<T>, Error> {
+        match resp.into_result()? {
             RespValue::Nil => Ok(None),
-            x => Ok(Some(T::from_resp_int(x)?)),
+            other => Ok(Some(T::try_from(other)?)),
         }
     }
 }
 
-impl<T: FromResp> FromResp for Vec<T> {
+impl<T: TryFrom<RespValue, Error = Error>> TryFrom<RespValue> for Vec<T> {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<Vec<T>, Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<Vec<T>, Error> {
+        match resp.into_result()? {
             RespValue::Array(ary) => {
                 let mut ar = Vec::with_capacity(ary.len());
                 for value in ary {
-                    ar.push(T::from_resp(value)?);
+                    ar.push(T::try_from(value)?);
                 }
                 Ok(ar)
             }
-            _ => Err(error::resp("Cannot be converted into a vector", resp)),
+            other => Err(error::resp("Cannot be converted into a vector", other)),
         }
     }
 }
 
-impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp for HashMap<K, T, S> {
-    fn from_resp_int(resp: RespValue) -> Result<HashMap<K, T, S>, Error> {
-        match resp {
+impl<K: TryFrom<RespValue, Error = Error> + Hash + Eq, T: TryFrom<RespValue, Error = Error>, S: BuildHasher + Default> TryFrom<RespValue> for HashMap<K, T, S> {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(resp: RespValue) -> Result<HashMap<K, T, S>, Error> {
+        match resp.into_result()? {
             RespValue::Array(ary) => {
                 let mut map = HashMap::with_capacity_and_hasher(ary.len(), S::default());
                 let mut items = ary.into_iter();
 
                 while let Some(k) = items.next() {
-                    let key = K::from_resp(k)?;
-                    let value = T::from_resp(items.next().ok_or_else(|| {
+                    let key = K::try_from(k)?;
+                    let value = T::try_from(items.next().ok_or_else(|| {
                         error::resp(
                             "Cannot convert an odd number of elements into a hashmap",
                             "".into(),
@@ -266,15 +265,17 @@ impl<K: FromResp + Hash + Eq, T: FromResp, S: BuildHasher + Default> FromResp fo
 
                 Ok(map)
             }
-            _ => Err(error::resp("Cannot be converted into a hashmap", resp)),
+            other => Err(error::resp("Cannot be converted into a hashmap", other)),
         }
     }
 }
 
-impl FromResp for () {
+impl TryFrom<RespValue> for () {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<(), Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<(), Error> {
+        match resp.into_result()? {
             RespValue::SimpleString(string) => match string.as_ref() {
                 "OK" => Ok(()),
                 _ => Err(Error::Resp(
@@ -282,28 +283,30 @@ impl FromResp for () {
                     None,
                 )),
             },
-            _ => Err(error::resp(
+            other => Err(error::resp(
                 "Unexpected value, should be encoded as a SimpleString",
-                resp,
+                other,
             )),
         }
     }
 }
 
-impl<A, B> FromResp for (A, B)
+impl<A, B> TryFrom<RespValue> for (A, B)
 where
-    A: FromResp,
-    B: FromResp,
+    A: TryFrom<RespValue, Error = Error>,
+    B: TryFrom<RespValue, Error = Error>,
 {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<(A, B), Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<(A, B), Error> {
+        match resp.into_result()? {
             RespValue::Array(ary) => {
                 if ary.len() == 2 {
                     let mut ary_iter = ary.into_iter();
                     Ok((
-                        A::from_resp(ary_iter.next().expect("No value"))?,
-                        B::from_resp(ary_iter.next().expect("No value"))?,
+                        A::try_from(ary_iter.next().expect("No value"))?,
+                        B::try_from(ary_iter.next().expect("No value"))?,
                     ))
                 } else {
                     Err(Error::Resp(
@@ -312,30 +315,32 @@ where
                     ))
                 }
             }
-            _ => Err(error::resp(
+            other => Err(error::resp(
                 "Unexpected value, should be encoded as an array",
-                resp,
+                other,
             )),
         }
     }
 }
 
-impl<A, B, C> FromResp for (A, B, C)
+impl<A, B, C> TryFrom<RespValue> for (A, B, C)
 where
-    A: FromResp,
-    B: FromResp,
-    C: FromResp,
+    A: TryFrom<RespValue, Error = Error>,
+    B: TryFrom<RespValue, Error = Error>,
+    C: TryFrom<RespValue, Error = Error>,
 {
+    type Error = Error;
+
     #[inline]
-    fn from_resp_int(resp: RespValue) -> Result<(A, B, C), Error> {
-        match resp {
+    fn try_from(resp: RespValue) -> Result<(A, B, C), Error> {
+        match resp.into_result()? {
             RespValue::Array(ary) => {
                 if ary.len() == 3 {
                     let mut ary_iter = ary.into_iter();
                     Ok((
-                        A::from_resp(ary_iter.next().expect("No value"))?,
-                        B::from_resp(ary_iter.next().expect("No value"))?,
-                        C::from_resp(ary_iter.next().expect("No value"))?,
+                        A::try_from(ary_iter.next().expect("No value"))?,
+                        B::try_from(ary_iter.next().expect("No value"))?,
+                        C::try_from(ary_iter.next().expect("No value"))?,
                     ))
                 } else {
                     Err(Error::Resp(
@@ -344,9 +349,9 @@ where
                     ))
                 }
             }
-            _ => Err(error::resp(
+            other => Err(error::resp(
                 "Unexpected value, should be encoded as an array",
-                resp,
+                other,
             )),
         }
     }
@@ -743,7 +748,7 @@ mod tests {
 
     use tokio_util::codec::{Decoder, Encoder};
 
-    use super::{Error, FromResp, RespCodec, RespValue};
+    use super::{Error, RespCodec, RespValue};
 
     fn obj_to_bytes(obj: RespValue) -> Vec<u8> {
         let mut bytes = BytesMut::new();
@@ -815,21 +820,21 @@ mod tests {
     #[test]
     fn test_integer_overflow() {
         let resp_object = RespValue::Integer(i64::MAX);
-        let res = i32::from_resp(resp_object);
+        let res = i32::try_from(resp_object);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_integer_underflow() {
         let resp_object = RespValue::Integer(-2);
-        let res = u64::from_resp(resp_object);
+        let res = u64::try_from(resp_object);
         assert!(res.is_err());
     }
 
     #[test]
     fn test_integer_convesion() {
         let resp_object = RespValue::Integer(50);
-        assert_eq!(u32::from_resp(resp_object).unwrap(), 50);
+        assert_eq!(u32::try_from(resp_object).unwrap(), 50);
     }
 
     #[test]
@@ -845,7 +850,7 @@ mod tests {
             "VALUE2".into(),
         ]);
         assert_eq!(
-            HashMap::<String, String>::from_resp(resp_object).unwrap(),
+            HashMap::<String, String>::try_from(resp_object).unwrap(),
             expected
         );
     }
@@ -859,7 +864,7 @@ mod tests {
             "VALUE2".into(),
             "KEY3".into(),
         ]);
-        let res = HashMap::<String, String>::from_resp(resp_object);
+        let res = HashMap::<String, String>::try_from(resp_object);
 
         match res {
             Err(Error::Resp(_, _)) => {}

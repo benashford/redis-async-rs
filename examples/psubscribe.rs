@@ -12,7 +12,7 @@ use std::env;
 
 use futures::StreamExt;
 
-use redis_async::{client, resp::FromResp};
+use redis_async::client;
 
 #[tokio::main]
 async fn main() {
@@ -32,7 +32,7 @@ async fn main() {
 
     while let Some(message) = msgs.next().await {
         match message {
-            Ok(message) => println!("{}", String::from_resp(message).unwrap()),
+            Ok(message) => println!("{}", String::try_from(message).unwrap()),
             Err(e) => {
                 eprintln!("ERROR: {}", e);
                 break;
