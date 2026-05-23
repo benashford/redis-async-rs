@@ -359,8 +359,9 @@ mod test {
         // Unsubscribe from topic 2
         pubsub.unsubscribe(UNSUBSCRIBE_TOPIC_2);
 
-        // Ensure unsubscription is processed
-        sleep(Duration::from_millis(1000)).await;
+        // Get the next message for topic 2 - confirms unsubscription has been processed by Redis
+        let result2 = topic_2.next().await;
+        assert!(result2.is_none());
 
         // Drop the subscription for topic 3
         mem::drop(topic_3);
@@ -389,10 +390,6 @@ mod test {
             .expect("Cannot get next value")
             .expect("Cannot get next value");
         assert_eq!(result1, "test-message-1.5".into());
-
-        // Get the next message for topic 2
-        let result2 = topic_2.next().await;
-        assert!(result2.is_none());
     }
 
     /// Test that we can subscribe, unsubscribe, and resubscribe to a topic.
@@ -419,19 +416,19 @@ mod test {
         // Unsubscribe from topic 1
         pubsub.unsubscribe(RESUBSCRIBE_TOPIC);
 
-        // Yes, I know, just testing...
-        sleep(Duration::from_millis(1000)).await;
-
-        // Send some more messages
-        paired.send_and_forget(resp_array![
-            "PUBLISH",
-            RESUBSCRIBE_TOPIC,
-            "test-message-1.5"
-        ]);
-
-        // Get the next message for topic 1
+        // Get the next message for topic 1 - confirms unsubscription has been processed by Redis
         let result1 = topic_1.next().await;
         assert!(result1.is_none());
+
+        // Send some more messages (will be ignored since we are unsubscribed)
+        let _: usize = paired
+            .send(resp_array![
+                "PUBLISH",
+                RESUBSCRIBE_TOPIC,
+                "test-message-1.5"
+            ])
+            .await
+            .expect("Cannot publish");
 
         // Resubscribe to topic 1
         let mut topic_1 = pubsub
