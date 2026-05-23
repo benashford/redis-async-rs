@@ -10,30 +10,36 @@
 
 //! Error handling
 
-use std::error;
-use std::fmt;
 use std::io;
 use std::sync::Arc;
 
 use futures_channel::mpsc;
+use thiserror::Error;
 
 use crate::resp;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum Error {
     /// A non-specific internal error that prevented an operation from completing
+    #[error("{0}")]
     Internal(String),
 
-    /// An IO error occurred
+    /// An IO error occurred.
+    ///
+    /// The underlying `io::Error` is wrapped in an `Arc` to allow `Error` to be `Clone`.
+    #[error("{0}")]
     IO(Arc<io::Error>),
 
     /// A RESP parsing/serialising error occurred
+    #[error("{0}: {1:?}")]
     Resp(String, Option<resp::RespValue>),
 
     /// A remote error
+    #[error("{0}")]
     Remote(String),
 
     /// Error creating a connection, or an error with a connection being closed unexpectedly
+    #[error("{0}")]
     Connection(ConnectionReason),
 
     /// An unexpected error.  In this context "unexpected" means
@@ -43,13 +49,42 @@ pub enum Error {
     ///
     /// If any error is propagated this way that needs to be handled, then it should be made into
     /// a proper option.
+    #[error("{0}")]
     Unexpected(String),
 
     #[cfg(feature = "with-rustls")]
+    #[error("Invalid dns name")]
     InvalidDnsName,
 
+    /// A TLS error occurred.
+    ///
+    /// The underlying `native_tls::Error` is wrapped in an `Arc` to allow `Error` to be `Clone`.
     #[cfg(feature = "with-native-tls")]
+    #[error("{0}")]
     Tls(Arc<native_tls::Error>),
+}
+
+// `thiserror`'s `#[from]` attribute requires the source type to appear directly (not wrapped in
+// `Arc`), so these two `From` impls are written manually.
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::IO(Arc::new(err))
+    }
+}
+
+#[cfg(feature = "with-native-tls")]
+impl From<native_tls::Error> for Error {
+    fn from(err: native_tls::Error) -> Error {
+        Error::Tls(Arc::new(err))
+    }
+}
+
+// `TrySendError<T>` is generic, so `#[from]` cannot cover it; kept as a manual impl.
+impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
+    fn from(err: mpsc::TrySendError<T>) -> Error {
+        Error::Unexpected(format!("Cannot write to channel: {}", err))
+    }
 }
 
 pub(crate) fn internal(msg: impl Into<String>) -> Error {
@@ -64,77 +99,23 @@ pub(crate) fn resp(msg: impl Into<String>, resp: resp::RespValue) -> Error {
     Error::Resp(msg.into(), Some(resp))
 }
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::IO(Arc::new(err))
-    }
-}
-
-impl<T: 'static + Send> From<mpsc::TrySendError<T>> for Error {
-    fn from(err: mpsc::TrySendError<T>) -> Error {
-        Error::Unexpected(format!("Cannot write to channel: {}", err))
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Error::IO(err) => Some(err),
-            #[cfg(feature = "with-native-tls")]
-            Error::Tls(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(feature = "with-native-tls")]
-impl From<native_tls::Error> for Error {
-    fn from(err: native_tls::Error) -> Error {
-        Error::Tls(Arc::new(err))
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::Internal(s) => write!(f, "{}", s),
-            Error::IO(err) => write!(f, "{}", err),
-            Error::Resp(s, resp) => write!(f, "{}: {:?}", s, resp),
-            Error::Remote(s) => write!(f, "{}", s),
-            Error::Connection(ConnectionReason::Connected) => {
-                write!(f, "Connection already established")
-            }
-            Error::Connection(ConnectionReason::Connecting) => write!(f, "Connection in progress"),
-            Error::Connection(ConnectionReason::ConnectionFailed) => {
-                write!(f, "The last attempt to establish a connection failed")
-            }
-            Error::Connection(ConnectionReason::NotConnected) => {
-                write!(f, "Connection has been closed")
-            }
-            #[cfg(feature = "with-rustls")]
-            Error::InvalidDnsName => {
-                write!(f, "Invalid dns name")
-            }
-            #[cfg(feature = "with-native-tls")]
-            Error::Tls(err) => write!(f, "{}", err),
-            Error::Unexpected(err) => write!(f, "{}", err),
-        }
-    }
-}
-
 /// Details of a `ConnectionError`
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Error)]
 pub enum ConnectionReason {
     /// An attempt to use a connection while it is in the "connecting" state, clients should try
     /// again
+    #[error("Connection in progress")]
     Connecting,
     /// An attempt was made to reconnect after a connection was established, clients should try
     /// again
+    #[error("Connection already established")]
     Connected,
     /// Connection failed - this can be returned from a call to reconnect, the actual error will be
     /// sent to the client at the next call
+    #[error("The last attempt to establish a connection failed")]
     ConnectionFailed,
     /// The connection is not currently connected, the connection will reconnect asynchronously,
     /// clients should try again
+    #[error("Connection has been closed")]
     NotConnected,
 }
