@@ -18,10 +18,7 @@ use tokio::{
 };
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{
-    error,
-    resp::RespCodec,
-};
+use crate::{error, resp::RespCodec};
 
 #[pin_project(project = RespConnectionInnerProj)]
 #[cfg_attr(

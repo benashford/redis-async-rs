@@ -108,8 +108,6 @@ impl fmt::Debug for RespValue {
     }
 }
 
-
-
 impl TryFrom<RespValue> for String {
     type Error = Error;
 
@@ -241,7 +239,12 @@ impl<T: TryFrom<RespValue, Error = Error>> TryFrom<RespValue> for Vec<T> {
     }
 }
 
-impl<K: TryFrom<RespValue, Error = Error> + Hash + Eq, T: TryFrom<RespValue, Error = Error>, S: BuildHasher + Default> TryFrom<RespValue> for HashMap<K, T, S> {
+impl<
+        K: TryFrom<RespValue, Error = Error> + Hash + Eq,
+        T: TryFrom<RespValue, Error = Error>,
+        S: BuildHasher + Default,
+    > TryFrom<RespValue> for HashMap<K, T, S>
+{
     type Error = Error;
 
     #[inline]
