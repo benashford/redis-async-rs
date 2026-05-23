@@ -21,7 +21,7 @@ use futures_util::stream::{Fuse, StreamExt};
 use crate::{
     client::connect::RespConnection,
     error::{self, ConnectionReason},
-    resp::{self, FromResp},
+    resp,
 };
 
 use super::{PubsubEvent, PubsubSink};
@@ -132,13 +132,13 @@ impl PubsubConnectionInner {
                 messages.pop(),
             ) {
                 (Some(msg), Some(topic), Some(message_type), None) => {
-                    match (msg, String::from_resp(topic), message_type) {
+                    match (msg, String::try_from(topic), message_type) {
                         (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
                     }
                 }
                 (Some(msg), Some(_), Some(topic), Some(message_type)) => {
-                    match (msg, String::from_resp(topic), message_type) {
+                    match (msg, String::try_from(topic), message_type) {
                         (msg, Ok(topic), resp::RespValue::BulkString(bytes)) => (bytes, topic, msg),
                         _ => return Err(error::unexpected("Incorrect format of a PUBSUB message")),
                     }

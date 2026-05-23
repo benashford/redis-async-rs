@@ -294,7 +294,8 @@ impl PairedConnection {
     ///
     /// The message must be in the format of a single RESP message, this can be constructed
     /// manually or with the `resp_array!` macro.  Returned is a future that resolves to the value
-    /// returned from Redis.  The type must be one for which the `resp::FromResp` trait is defined.
+    /// Returned is a future that resolves to the value returned from Redis.  The type must be one
+    /// for which the `TryFrom<resp::RespValue>` trait is defined where `error::Error: From<T::Error>`.
     ///
     /// The future will fail for numerous reasons, including but not limited to: IO issues, conversion
     /// problems, and server-side errors being returned by Redis.
@@ -304,7 +305,8 @@ impl PairedConnection {
     /// that `send` is called.
     pub fn send<T>(&self, msg: resp::RespValue) -> SendFuture<T>
     where
-        T: resp::FromResp + Unpin,
+        T: TryFrom<resp::RespValue> + Unpin,
+        error::Error: From<T::Error>,
     {
         match &msg {
             resp::RespValue::Array(_) => (),
@@ -368,7 +370,8 @@ impl<T> SendFuture<T> {
 
 impl<T> Future for SendFuture<T>
 where
-    T: resp::FromResp + Unpin,
+    T: TryFrom<resp::RespValue> + Unpin,
+    error::Error: From<T::Error>,
 {
     type Output = Result<T, error::Error>;
 
@@ -380,7 +383,10 @@ where
                 None => panic!("Future polled several times after completion"),
             },
             SendFutureType::Wait(ref mut rx) => match Pin::new(rx).poll(cx) {
-                Poll::Ready(Ok(Ok(v))) => Poll::Ready(T::from_resp(v)),
+                Poll::Ready(Ok(Ok(v))) => match v.into_result() {
+                    Ok(v) => Poll::Ready(T::try_from(v).map_err(error::Error::from)),
+                    Err(e) => Poll::Ready(Err(e)),
+                },
                 Poll::Ready(Ok(Err(e))) => Poll::Ready(Err(e)),
                 Poll::Ready(Err(_)) => Poll::Ready(Err(error::internal(
                     "Connection closed before response received",

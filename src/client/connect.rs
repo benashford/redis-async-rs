@@ -18,10 +18,7 @@ use tokio::{
 };
 use tokio_util::codec::{Decoder, Framed};
 
-use crate::{
-    error,
-    resp::{self, RespCodec},
-};
+use crate::{error, resp::RespCodec};
 
 #[pin_project(project = RespConnectionInnerProj)]
 #[cfg_attr(
@@ -223,7 +220,7 @@ pub async fn connect_with_auth(
 
         connection.send(auth).await?;
         match connection.next().await {
-            Some(Ok(value)) => match resp::FromResp::from_resp(value) {
+            Some(Ok(value)) => match <()>::try_from(value) {
                 Ok(()) => (),
                 Err(e) => return Err(e),
             },
