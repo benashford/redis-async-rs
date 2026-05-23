@@ -533,11 +533,14 @@ mod test {
             UNSUBSCRIBE_TWICE_TOPIC_1,
             "test-message-1"
         ]);
-        paired.send_and_forget(resp_array![
-            "PUBLISH",
-            UNSUBSCRIBE_TWICE_TOPIC_2,
-            "test-message-2"
-        ]);
+        let _: usize = paired
+            .send(resp_array![
+                "PUBLISH",
+                UNSUBSCRIBE_TWICE_TOPIC_2,
+                "test-message-2"
+            ])
+            .await
+            .expect("Cannot publish");
 
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
         pubsub.unsubscribe(UNSUBSCRIBE_TWICE_TOPIC_2);
