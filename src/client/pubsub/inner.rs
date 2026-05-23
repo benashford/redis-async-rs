@@ -17,7 +17,7 @@ use futures_util::stream::{Stream, StreamExt};
 
 use crate::{
     client::connect::RespConnection,
-    error::{self, ConnectionReason},
+    error,
     resp::{self, FromResp},
 };
 
@@ -302,7 +302,7 @@ pub(crate) async fn run_pubsub(
                     }
                     None => {
                         if !subscriptions.is_empty() || !psubscriptions.is_empty() {
-                            let err = error::Error::Connection(ConnectionReason::NotConnected);
+                            let err = error::Error::Connection(error::ConnectionReason::NotConnected);
                             fail_all(&subscriptions, &psubscriptions, err.clone());
                             return Err(err);
                         }

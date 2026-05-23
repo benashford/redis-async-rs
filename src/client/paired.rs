@@ -109,6 +109,7 @@ async fn inner_conn_fn(
 
     tokio::spawn(async move {
         let mut waiting = VecDeque::new();
+        let mut responder_rx_closed = false;
 
         fn fail_all(waiting: &mut VecDeque<Responder>, err: error::Error) {
             for tx in waiting.drain(..) {
@@ -120,11 +121,17 @@ async fn inner_conn_fn(
         }
 
         loop {
+            if responder_rx_closed && waiting.is_empty() {
+                break;
+            }
+
             tokio::select! {
-                res = responder_rx.next() => {
+                res = responder_rx.next(), if !responder_rx_closed => {
                     match res {
                         Some(tx) => waiting.push_back(tx),
-                        None => break,
+                        None => {
+                            responder_rx_closed = true;
+                        }
                     }
                 }
                 msg_opt = stream.next() => {
@@ -148,7 +155,6 @@ async fn inner_conn_fn(
                 }
             }
         }
-        fail_all(&mut waiting, error::unexpected("Connection to Redis closed unexpectedly"));
     });
 
     Ok(out_tx)
