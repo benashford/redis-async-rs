@@ -128,6 +128,7 @@ async fn inner_conn_fn(
             }
 
             tokio::select! {
+                biased;
                 res = responder_rx.next(), if !responder_rx_closed => {
                     match res {
                         Some(tx) => waiting.push_back(tx),

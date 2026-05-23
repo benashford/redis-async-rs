@@ -274,6 +274,7 @@ pub(crate) async fn run_pubsub(
         }
 
         tokio::select! {
+            biased;
             pending_sub = pending_rx.next(), if !pending_rx_closed => {
                 match pending_sub {
                     Some(PendingSub::Sub(topic, sender, signal)) => {
