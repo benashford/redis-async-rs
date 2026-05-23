@@ -421,11 +421,14 @@ mod test {
         assert!(result1.is_none());
 
         // Send some more messages (will be ignored since we are unsubscribed)
-        paired.send_and_forget(resp_array![
-            "PUBLISH",
-            RESUBSCRIBE_TOPIC,
-            "test-message-1.5"
-        ]);
+        let _: usize = paired
+            .send(resp_array![
+                "PUBLISH",
+                RESUBSCRIBE_TOPIC,
+                "test-message-1.5"
+            ])
+            .await
+            .expect("Cannot publish");
 
         // Resubscribe to topic 1
         let mut topic_1 = pubsub
