@@ -11,20 +11,15 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_channel::{mpsc, oneshot};
-use futures_sink::Sink;
-use futures_util::{future::TryFutureExt, stream::StreamExt};
+use futures_util::{future::TryFutureExt, stream::{Stream, StreamExt}};
 
-use super::{
-    connect::{connect_with_auth, RespConnection},
-    ConnectionBuilder,
-};
+use super::{connect::connect_with_auth, ConnectionBuilder};
 
 use crate::{
     error,
@@ -32,172 +27,9 @@ use crate::{
     resp,
 };
 
-/// The state of sending messages to a Redis server
-enum SendStatus {
-    /// The connection is clear, more messages can be sent
-    Ok,
-    /// The connection has closed, nothing more should be sent
-    End,
-    /// The connection reported itself as full, it should be flushed before attempting to send the
-    /// pending message again
-    Full(resp::RespValue),
-}
-
-/// The state of receiving messages from a Redis server
-#[derive(Debug)]
-enum ReceiveStatus {
-    /// Everything has been read, and the connection is closed, don't attempt to read any more
-    ReadyFinished,
-    /// Everything has been read, but the connection is open for future messages.
-    ReadyMore,
-    /// The connection is not ready
-    NotReady,
-}
-
 type CommandResult = Result<resp::RespValue, error::Error>;
 type Responder = oneshot::Sender<CommandResult>;
 type SendPayload = (resp::RespValue, Responder);
-
-// /// The PairedConnectionInner is a spawned future that is responsible for pairing commands and
-// /// results onto a `RespConnection` that is otherwise unpaired
-struct PairedConnectionInner {
-    /// The underlying connection that talks the RESP protocol
-    connection: RespConnection,
-    /// The channel upon which commands are received
-    out_rx: mpsc::UnboundedReceiver<SendPayload>,
-    /// The queue of waiting oneshot's for commands sent but results not yet received
-    waiting: VecDeque<Responder>,
-
-    /// The status of the underlying connection
-    send_status: SendStatus,
-}
-
-impl PairedConnectionInner {
-    fn new(
-        con: RespConnection,
-        out_rx: mpsc::UnboundedReceiver<(resp::RespValue, Responder)>,
-    ) -> Self {
-        PairedConnectionInner {
-            connection: con,
-            out_rx,
-            waiting: VecDeque::new(),
-            send_status: SendStatus::Ok,
-        }
-    }
-
-    fn impl_start_send(
-        &mut self,
-        cx: &mut Context,
-        msg: resp::RespValue,
-    ) -> Result<bool, error::Error> {
-        match Pin::new(&mut self.connection).poll_ready(cx) {
-            Poll::Ready(Ok(())) => (),
-            Poll::Ready(Err(e)) => return Err(e.into()),
-            Poll::Pending => {
-                self.send_status = SendStatus::Full(msg);
-                return Ok(false);
-            }
-        }
-
-        self.send_status = SendStatus::Ok;
-        Pin::new(&mut self.connection).start_send(msg)?;
-        Ok(true)
-    }
-
-    fn poll_start_send(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
-        let mut status = SendStatus::Ok;
-        mem::swap(&mut status, &mut self.send_status);
-
-        let message = match status {
-            SendStatus::End => {
-                self.send_status = SendStatus::End;
-                return Ok(false);
-            }
-            SendStatus::Full(msg) => msg,
-            SendStatus::Ok => match self.out_rx.poll_next_unpin(cx) {
-                Poll::Ready(Some((msg, tx))) => {
-                    self.waiting.push_back(tx);
-                    msg
-                }
-                Poll::Ready(None) => {
-                    self.send_status = SendStatus::End;
-                    return Ok(false);
-                }
-                Poll::Pending => return Ok(false),
-            },
-        };
-
-        self.impl_start_send(cx, message)
-    }
-
-    fn poll_complete(&mut self, cx: &mut Context) -> Result<(), error::Error> {
-        let _ = Pin::new(&mut self.connection).poll_flush(cx)?;
-        Ok(())
-    }
-
-    fn receive(&mut self, cx: &mut Context) -> Result<ReceiveStatus, error::Error> {
-        if let SendStatus::End = self.send_status {
-            if self.waiting.is_empty() {
-                return Ok(ReceiveStatus::ReadyFinished);
-            }
-        }
-        match self.connection.poll_next_unpin(cx) {
-            Poll::Ready(None) => Err(error::unexpected("Connection to Redis closed unexpectedly")),
-            Poll::Ready(Some(Ok(msg))) => {
-                let tx = match self.waiting.pop_front() {
-                    Some(tx) => tx,
-                    None => panic!("Received unexpected message: {:?}", msg),
-                };
-                let _ = tx.send(Ok(msg));
-                Ok(ReceiveStatus::ReadyMore)
-            }
-            Poll::Ready(Some(Err(e))) => Err(e),
-            Poll::Pending => Ok(ReceiveStatus::NotReady),
-        }
-    }
-
-    fn handle_error(&mut self, e: &error::Error) {
-        for tx in self.waiting.drain(..) {
-            let _ = tx.send(Err(error::internal(format!(
-                "Failed due to underlying failure: {}",
-                e
-            ))));
-        }
-
-        log::error!("Internal error in PairedConnectionInner: {}", e);
-    }
-}
-
-impl Future for PairedConnectionInner {
-    type Output = ();
-
-    #[allow(clippy::unit_arg)]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let mut_self = self.get_mut();
-        // If there's something to send, send it...
-        let mut sending = true;
-        while sending {
-            sending = match mut_self.poll_start_send(cx) {
-                Ok(sending) => sending,
-                Err(ref e) => return Poll::Ready(mut_self.handle_error(e)),
-            };
-        }
-
-        if let Err(ref e) = mut_self.poll_complete(cx) {
-            return Poll::Ready(mut_self.handle_error(e));
-        };
-
-        // If there's something to receive, receive it...
-        loop {
-            match mut_self.receive(cx) {
-                Ok(ReceiveStatus::NotReady) => return Poll::Pending,
-                Ok(ReceiveStatus::ReadyMore) => (),
-                Ok(ReceiveStatus::ReadyFinished) => return Poll::Ready(()),
-                Err(ref e) => return Poll::Ready(mut_self.handle_error(e)),
-            }
-        }
-    }
-}
 
 /// A shareable and cheaply cloneable connection to which Redis commands can be sent
 #[derive(Debug, Clone)]
@@ -226,9 +58,99 @@ async fn inner_conn_fn(
         socket_timeout,
     )
     .await?;
-    let (out_tx, out_rx) = mpsc::unbounded();
-    let paired_connection_inner = PairedConnectionInner::new(connection, out_rx);
-    tokio::spawn(paired_connection_inner);
+    let (out_tx, mut out_rx) = mpsc::unbounded::<SendPayload>();
+    let (mut sink, mut stream) = connection.split();
+    let (responder_tx, mut responder_rx) = mpsc::unbounded::<Responder>();
+
+    tokio::spawn(async move {
+        use futures_util::sink::SinkExt;
+        use futures_util::future::poll_fn;
+
+        while let Some((first_msg, first_tx)) = out_rx.next().await {
+            if let Err(e) = sink.feed(first_msg).await {
+                let _ = first_tx.send(Err(e.into()));
+                break;
+            }
+            if responder_tx.unbounded_send(first_tx).is_err() {
+                break;
+            }
+
+            // Pull and feed any other immediately available messages
+            loop {
+                let mut next_payload = None;
+                poll_fn(|cx| {
+                    match Pin::new(&mut out_rx).poll_next(cx) {
+                        Poll::Ready(Some(item)) => {
+                            next_payload = Some(item);
+                            Poll::Ready(())
+                        }
+                        _ => Poll::Ready(()),
+                    }
+                }).await;
+
+                if let Some((msg, tx)) = next_payload {
+                    if let Err(e) = sink.feed(msg).await {
+                        let _ = tx.send(Err(e.into()));
+                        break;
+                    }
+                    if responder_tx.unbounded_send(tx).is_err() {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            if sink.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let mut waiting = VecDeque::new();
+
+        fn fail_all(waiting: &mut VecDeque<Responder>, err: error::Error) {
+            for tx in waiting.drain(..) {
+                let _ = tx.send(Err(error::internal(format!(
+                    "Failed due to underlying failure: {}",
+                    err
+                ))));
+            }
+        }
+
+        loop {
+            tokio::select! {
+                res = responder_rx.next() => {
+                    match res {
+                        Some(tx) => waiting.push_back(tx),
+                        None => break,
+                    }
+                }
+                msg_opt = stream.next() => {
+                    match msg_opt {
+                        Some(Ok(msg)) => {
+                            if let Some(tx) = waiting.pop_front() {
+                                let _ = tx.send(Ok(msg));
+                            } else {
+                                log::error!("Received unexpected message: {:?}", msg);
+                            }
+                        }
+                        Some(Err(e)) => {
+                            fail_all(&mut waiting, e.into());
+                            return;
+                        }
+                        None => {
+                            fail_all(&mut waiting, error::unexpected("Connection to Redis closed unexpectedly"));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        fail_all(&mut waiting, error::unexpected("Connection to Redis closed unexpectedly"));
+    });
+
     Ok(out_tx)
 }
 

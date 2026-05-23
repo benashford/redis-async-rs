@@ -30,7 +30,7 @@ use crate::{
     resp,
 };
 
-use self::inner::PubsubConnectionInner;
+use self::inner::run_pubsub;
 
 #[derive(Debug)]
 pub(crate) enum PubsubEvent {
@@ -78,7 +78,7 @@ async fn inner_conn_fn(
     .await?;
     let (out_tx, out_rx) = mpsc::unbounded();
     tokio::spawn(async {
-        match PubsubConnectionInner::new(connection, out_rx).await {
+        match run_pubsub(connection, out_rx).await {
             Ok(_) => (),
             Err(e) => log::error!("Pub/Sub error: {:?}", e),
         }
