@@ -15,11 +15,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use futures_util::{
-    future::{self, Either},
-    TryFutureExt,
-};
-
 use tokio::time::timeout;
 
 use crate::error::{self, ConnectionReason};
@@ -116,7 +111,7 @@ where
 enum ReconnectState<T> {
     NotConnected,
     Connected(T),
-    ConnectionFailed(Mutex<Option<error::Error>>),
+    ConnectionFailed(error::Error),
     Connecting,
 }
 
@@ -154,7 +149,7 @@ where
 
     pub(crate) fn do_work(&self, a: A) -> Result<(), error::Error> {
         let mut state = self.0.state.lock().expect("Cannot obtain read lock");
-        match *state {
+        match &mut *state {
             ReconnectState::NotConnected => {
                 self.reconnect_spawn(state);
                 Err(error::Error::Connection(ConnectionReason::NotConnected))
@@ -167,17 +162,14 @@ where
                 }
                 Ok(())
             }
-            ReconnectState::ConnectionFailed(ref e) => {
-                let mut lock = e.lock().expect("Poisioned lock");
-                let e = match lock.take() {
-                    Some(e) => e,
-                    None => error::Error::Connection(ConnectionReason::NotConnected),
+            ReconnectState::ConnectionFailed(_) => {
+                let old_state = mem::replace(&mut *state, ReconnectState::NotConnected);
+                let err = match old_state {
+                    ReconnectState::ConnectionFailed(e) => e,
+                    _ => unreachable!(),
                 };
-                mem::drop(lock);
-
-                *state = ReconnectState::NotConnected;
                 self.reconnect_spawn(state);
-                Err(e)
+                Err(err)
             }
             ReconnectState::Connecting => {
                 Err(error::Error::Connection(ConnectionReason::Connecting))
@@ -193,45 +185,37 @@ where
     ) -> impl Future<Output = Result<(), error::Error>> + Send {
         log::info!("Attempting to reconnect, current state: {:?}", *state);
 
-        match *state {
-            ReconnectState::Connected(_) => {
-                return Either::Right(future::err(error::Error::Connection(
-                    ConnectionReason::Connected,
-                )));
+        let early_err = match *state {
+            ReconnectState::Connected(_) => Some(ConnectionReason::Connected),
+            ReconnectState::Connecting => Some(ConnectionReason::Connecting),
+            ReconnectState::NotConnected | ReconnectState::ConnectionFailed(_) => {
+                *state = ReconnectState::Connecting;
+                None
             }
-            ReconnectState::Connecting => {
-                return Either::Right(future::err(error::Error::Connection(
-                    ConnectionReason::Connecting,
-                )));
-            }
-            ReconnectState::NotConnected | ReconnectState::ConnectionFailed(_) => (),
-        }
-        *state = ReconnectState::Connecting;
+        };
 
         mem::drop(state);
 
         let reconnect = self.clone();
 
-        let connection_f = async move {
+        async move {
+            if let Some(reason) = early_err {
+                return Err(error::Error::Connection(reason));
+            }
+
             let mut connection_result = Err(error::internal("Initial connection failed"));
-            for i in 0..reconnect.0.reconnect_options.max_connection_attempts {
+            let max_attempts = reconnect.0.reconnect_options.max_connection_attempts;
+            let timeout_duration = reconnect.0.reconnect_options.connection_timeout;
+
+            for i in 0..max_attempts {
                 let connection_count = i + 1;
-                log::debug!(
-                    "Connection attempt {}/{}",
-                    connection_count,
-                    reconnect.0.reconnect_options.max_connection_attempts
-                );
-                connection_result = match timeout(
-                    reconnect.0.reconnect_options.connection_timeout,
-                    (reconnect.0.conn_fn)(),
-                )
-                .await
-                {
+                log::debug!("Connection attempt {}/{}", connection_count, max_attempts);
+                let conn_future = (reconnect.0.conn_fn)();
+                connection_result = match timeout(timeout_duration, conn_future).await {
                     Ok(con_r) => con_r,
                     Err(_) => Err(error::internal(format!(
                         "Connection timed-out after {} seconds",
-                        reconnect.0.reconnect_options.connection_timeout.as_secs()
-                            * connection_count
+                        timeout_duration.as_secs() * connection_count
                     ))),
                 };
                 if connection_result.is_ok() {
@@ -241,38 +225,35 @@ where
 
             let mut state = reconnect.0.state.lock().expect("Cannot obtain write lock");
 
-            match *state {
-                ReconnectState::NotConnected | ReconnectState::Connecting => {
-                    match connection_result {
-                        Ok(t) => {
-                            log::info!("Connection established");
-                            *state = ReconnectState::Connected(t);
-                            Ok(())
-                        }
-                        Err(e) => {
-                            log::error!("Connection cannot be established: {}", e);
-                            *state = ReconnectState::ConnectionFailed(Mutex::new(Some(e)));
-                            Err(error::Error::Connection(ConnectionReason::ConnectionFailed))
-                        }
+            if let ReconnectState::Connecting = *state {
+                match connection_result {
+                    Ok(t) => {
+                        log::info!("Connection established");
+                        *state = ReconnectState::Connected(t);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        log::error!("Connection cannot be established: {}", e);
+                        *state = ReconnectState::ConnectionFailed(e);
+                        Err(error::Error::Connection(ConnectionReason::ConnectionFailed))
                     }
                 }
-                ReconnectState::ConnectionFailed(_) => {
-                    panic!("The connection state wasn't reset before connecting")
-                }
-                ReconnectState::Connected(_) => {
-                    panic!("A connected state shouldn't be attempting to reconnect")
-                }
+            } else {
+                panic!(
+                    "Unexpected reconnect state when connection completed: {:?}",
+                    *state
+                );
             }
-        };
-
-        Either::Left(connection_f)
+        }
     }
 
     fn reconnect_spawn(&self, state: MutexGuard<ReconnectState<T>>) {
-        let reconnect_f = self
-            .reconnect(state)
-            .map_err(|e| log::error!("Error asynchronously reconnecting: {}", e));
+        let reconnect_f = self.reconnect(state);
 
-        tokio::spawn(reconnect_f);
+        tokio::spawn(async move {
+            if let Err(e) = reconnect_f.await {
+                log::error!("Error asynchronously reconnecting: {}", e);
+            }
+        });
     }
 }
