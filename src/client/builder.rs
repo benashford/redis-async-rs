@@ -25,6 +25,8 @@ pub struct ConnectionBuilder {
     pub(crate) tls: bool,
     pub(crate) socket_keepalive: Option<Duration>,
     pub(crate) socket_timeout: Option<Duration>,
+    pub(crate) connect_timeout: Option<Duration>,
+    pub(crate) keepalive_retries: Option<u32>,
 }
 
 const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(60);
@@ -42,6 +44,8 @@ impl ConnectionBuilder {
             tls: false,
             socket_keepalive: Some(DEFAULT_KEEPALIVE),
             socket_timeout: Some(DEFAULT_TIMEOUT),
+            connect_timeout: None,
+            keepalive_retries: None,
         })
     }
 
@@ -72,6 +76,26 @@ impl ConnectionBuilder {
     /// Set the socket timeout duration
     pub fn socket_timeout(&mut self, duration: Option<Duration>) -> &mut Self {
         self.socket_timeout = duration;
+        self
+    }
+
+    /// Set the connection establishment and authentication timeout.
+    ///
+    /// This bounds the duration of DNS lookup, TCP connection, TLS handshake,
+    /// and the Redis AUTH exchange.
+    ///
+    /// Note that for reconnecting clients (like paired and pubsub connections),
+    /// each reconnection attempt is also bounded by [`ConnectionBuilder::reconnect_timeout`].
+    /// Callers setting a longer `connect_timeout` should ensure `reconnect_timeout`
+    /// is adjusted to be at least as long as the connection timeout.
+    pub fn connect_timeout(&mut self, duration: Option<Duration>) -> &mut Self {
+        self.connect_timeout = duration;
+        self
+    }
+
+    /// Set the TCP keep-alive retries count
+    pub fn socket_keepalive_retries(&mut self, retries: Option<u32>) -> &mut Self {
+        self.keepalive_retries = retries;
         self
     }
 

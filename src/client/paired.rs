@@ -22,7 +22,7 @@ use futures_sink::Sink;
 use futures_util::{future::TryFutureExt, stream::StreamExt};
 
 use super::{
-    connect::{connect_with_auth, RespConnection},
+    connect::{connect_with_options, RespConnection},
     ConnectionBuilder,
 };
 
@@ -205,6 +205,7 @@ pub struct PairedConnection {
     out_tx_c: Arc<Reconnect<SendPayload, mpsc::UnboundedSender<SendPayload>>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn inner_conn_fn(
     host: String,
     port: u16,
@@ -213,10 +214,12 @@ async fn inner_conn_fn(
     tls: bool,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
 ) -> Result<mpsc::UnboundedSender<SendPayload>, error::Error> {
     let username = username.as_ref().map(|u| u.as_ref());
     let password = password.as_ref().map(|p| p.as_ref());
-    let connection = connect_with_auth(
+    let connection = connect_with_options(
         &host,
         port,
         username,
@@ -224,6 +227,8 @@ async fn inner_conn_fn(
         tls,
         socket_keepalive,
         socket_timeout,
+        connect_timeout,
+        keepalive_retries,
     )
     .await?;
     let (out_tx, out_rx) = mpsc::unbounded();
@@ -250,6 +255,8 @@ impl ConnectionBuilder {
 
         let socket_keepalive = self.socket_keepalive;
         let socket_timeout = self.socket_timeout;
+        let connect_timeout = self.connect_timeout;
+        let keepalive_retries = self.keepalive_retries;
 
         let conn_fn = move || {
             let con_f = inner_conn_fn(
@@ -260,6 +267,8 @@ impl ConnectionBuilder {
                 tls,
                 socket_keepalive,
                 socket_timeout,
+                connect_timeout,
+                keepalive_retries,
             );
             Box::pin(con_f) as Pin<Box<dyn Future<Output = Result<_, error::Error>> + Send + Sync>>
         };

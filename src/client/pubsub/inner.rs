@@ -252,7 +252,7 @@ impl PubsubConnectionInner {
             && self.out_rx.is_done()
     }
 
-    /// Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
+    // Returns true, if there are still valid subscriptions at the end, or false if not, i.e. the whole thing can be dropped.
     fn handle_messages(&mut self, cx: &mut Context) -> Result<bool, error::Error> {
         loop {
             match self.connection.poll_next_unpin(cx) {
