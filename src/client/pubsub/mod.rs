@@ -22,7 +22,7 @@ use futures_util::{
     stream::{Stream, StreamExt},
 };
 
-use super::{connect::connect_with_auth, ConnectionBuilder};
+use super::{connect::connect_with_options, ConnectionBuilder};
 
 use crate::{
     error,
@@ -53,6 +53,7 @@ pub struct PubsubConnection {
     out_tx_c: Arc<Reconnect<PubsubEvent, mpsc::UnboundedSender<PubsubEvent>>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn inner_conn_fn(
     // Needs to be a String for lifetime reasons
     host: String,
@@ -62,11 +63,13 @@ async fn inner_conn_fn(
     tls: bool,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
 ) -> Result<mpsc::UnboundedSender<PubsubEvent>, error::Error> {
     let username = username.as_deref();
     let password = password.as_deref();
 
-    let connection = connect_with_auth(
+    let connection = connect_with_options(
         &host,
         port,
         username,
@@ -74,6 +77,8 @@ async fn inner_conn_fn(
         tls,
         socket_keepalive,
         socket_timeout,
+        connect_timeout,
+        keepalive_retries,
     )
     .await?;
     let (out_tx, out_rx) = mpsc::unbounded();
@@ -101,6 +106,8 @@ impl ConnectionBuilder {
 
         let socket_keepalive = self.socket_keepalive;
         let socket_timeout = self.socket_timeout;
+        let connect_timeout = self.connect_timeout;
+        let keepalive_retries = self.keepalive_retries;
 
         let reconnecting_f = reconnect(
             |con: &mpsc::UnboundedSender<PubsubEvent>, act| {
@@ -115,6 +122,8 @@ impl ConnectionBuilder {
                     tls,
                     socket_keepalive,
                     socket_timeout,
+                    connect_timeout,
+                    keepalive_retries,
                 );
                 Box::pin(con_f)
             },

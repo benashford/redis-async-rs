@@ -15,18 +15,19 @@ use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
+    time::timeout,
 };
 use tokio_util::codec::{Decoder, Framed};
 
 use crate::{
-    error,
+    error::{internal, Error},
     resp::{self, RespCodec},
 };
 
 #[pin_project(project = RespConnectionInnerProj)]
 #[cfg_attr(
     any(feature = "with-rustls", feature = "with-native-tls"),
-    expect(
+    allow(
         clippy::large_enum_variant,
         reason = "will only be enabled if selected, and isn't moved once built"
     )
@@ -124,10 +125,8 @@ pub async fn connect(
     port: u16,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
-) -> Result<RespConnection, error::Error> {
-    let tcp_stream = TcpStream::connect((host, port)).await?;
-    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
-    Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
+) -> Result<RespConnection, Error> {
+    connect_plain_with_options(host, port, socket_keepalive, socket_timeout, None, None).await
 }
 
 #[cfg(feature = "with-rustls")]
@@ -136,8 +135,80 @@ pub async fn connect_tls(
     port: u16,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
-) -> Result<RespConnection, error::Error> {
+) -> Result<RespConnection, Error> {
+    connect_tls_with_options(host, port, socket_keepalive, socket_timeout, None, None).await
+}
+
+#[cfg(feature = "with-native-tls")]
+pub async fn connect_tls(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, Error> {
+    connect_tls_with_options(host, port, socket_keepalive, socket_timeout, None, None).await
+}
+
+pub async fn connect_with_auth(
+    host: &str,
+    port: u16,
+    username: Option<&str>,
+    password: Option<&str>,
+    tls: bool,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+) -> Result<RespConnection, Error> {
+    connect_with_options(
+        host,
+        port,
+        username,
+        password,
+        tls,
+        socket_keepalive,
+        socket_timeout,
+        None,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn connect_plain_with_options(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
+) -> Result<RespConnection, Error> {
+    let connect_future = TcpStream::connect((host, port));
+    let tcp_stream = if let Some(timeout_dur) = connect_timeout {
+        timeout(timeout_dur, connect_future)
+            .await
+            .map_err(|_| internal("Connection establishment timed out"))??
+    } else {
+        connect_future.await?
+    };
+    apply_keepalive_and_timeouts(
+        &tcp_stream,
+        socket_keepalive,
+        socket_timeout,
+        keepalive_retries,
+    )?;
+    Ok(RespCodec.framed(RespConnectionInner::Plain { stream: tcp_stream }))
+}
+
+#[cfg(feature = "with-rustls")]
+pub(crate) async fn connect_tls_with_options(
+    host: &str,
+    port: u16,
+    socket_keepalive: Option<Duration>,
+    socket_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
+) -> Result<RespConnection, Error> {
+    use crate::error::ConnectionReason;
     use std::sync::Arc;
+    use tokio::net::lookup_host;
     use tokio_rustls::{
         rustls::{ClientConfig, RootCertStore},
         TlsConnector,
@@ -149,52 +220,94 @@ pub async fn connect_tls(
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let connector = TlsConnector::from(Arc::new(config));
-    let addr =
-        tokio::net::lookup_host((host, port))
-            .await?
-            .next()
-            .ok_or(error::Error::Connection(
-                error::ConnectionReason::ConnectionFailed,
-            ))?;
-    let tcp_stream = TcpStream::connect(addr).await?;
-    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
 
-    let stream = connector
-        .connect(
-            String::from(host)
-                .try_into()
-                .map_err(|_err| error::Error::InvalidDnsName)?,
-            tcp_stream,
-        )
-        .await?;
+    let connect_future = async {
+        let addr = lookup_host((host, port))
+            .await
+            .map_err(Error::from)?
+            .next()
+            .ok_or(Error::Connection(ConnectionReason::ConnectionFailed))?;
+        TcpStream::connect(addr).await.map_err(Error::from)
+    };
+    let tcp_stream = if let Some(timeout_dur) = connect_timeout {
+        timeout(timeout_dur, connect_future)
+            .await
+            .map_err(|_| internal("Connection establishment timed out"))??
+    } else {
+        connect_future.await?
+    };
+    apply_keepalive_and_timeouts(
+        &tcp_stream,
+        socket_keepalive,
+        socket_timeout,
+        keepalive_retries,
+    )?;
+
+    let handshake_future = connector.connect(
+        String::from(host)
+            .try_into()
+            .map_err(|_err| Error::InvalidDnsName)?,
+        tcp_stream,
+    );
+    let stream = if let Some(timeout_dur) = connect_timeout {
+        timeout(timeout_dur, handshake_future)
+            .await
+            .map_err(|_| internal("TLS handshake timed out"))??
+    } else {
+        handshake_future.await?
+    };
     Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
 }
 
 #[cfg(feature = "with-native-tls")]
-pub async fn connect_tls(
+pub(crate) async fn connect_tls_with_options(
     host: &str,
     port: u16,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
-) -> Result<RespConnection, error::Error> {
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
+) -> Result<RespConnection, Error> {
+    use crate::error::ConnectionReason;
+    use tokio::net::lookup_host;
     let cx = native_tls::TlsConnector::builder().build()?;
     let cx = tokio_native_tls::TlsConnector::from(cx);
 
-    let addr =
-        tokio::net::lookup_host((host, port))
-            .await?
+    let connect_future = async {
+        let addr = lookup_host((host, port))
+            .await
+            .map_err(Error::from)?
             .next()
-            .ok_or(error::Error::Connection(
-                error::ConnectionReason::ConnectionFailed,
-            ))?;
-    let tcp_stream = TcpStream::connect(addr).await?;
-    apply_keepalive_and_timeouts(&tcp_stream, socket_keepalive, socket_timeout)?;
-    let stream = cx.connect(host, tcp_stream).await?;
+            .ok_or(Error::Connection(ConnectionReason::ConnectionFailed))?;
+        TcpStream::connect(addr).await.map_err(Error::from)
+    };
+    let tcp_stream = if let Some(timeout_dur) = connect_timeout {
+        timeout(timeout_dur, connect_future)
+            .await
+            .map_err(|_| internal("Connection establishment timed out"))??
+    } else {
+        connect_future.await?
+    };
+    apply_keepalive_and_timeouts(
+        &tcp_stream,
+        socket_keepalive,
+        socket_timeout,
+        keepalive_retries,
+    )?;
+    let handshake_future = cx.connect(host, tcp_stream);
+    let stream = if let Some(timeout_dur) = connect_timeout {
+        timeout(timeout_dur, handshake_future)
+            .await
+            .map_err(|_| internal("TLS handshake timed out"))??
+    } else {
+        handshake_future.await?
+    };
 
     Ok(RespCodec.framed(RespConnectionInner::Tls { stream }))
 }
 
-pub async fn connect_with_auth(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn connect_with_options(
     host: &str,
     port: u16,
     username: Option<&str>,
@@ -202,15 +315,41 @@ pub async fn connect_with_auth(
     #[allow(unused_variables)] tls: bool,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
-) -> Result<RespConnection, error::Error> {
+    connect_timeout: Option<Duration>,
+    keepalive_retries: Option<u32>,
+) -> Result<RespConnection, Error> {
     #[cfg(feature = "tls")]
     let mut connection = if tls {
-        connect_tls(host, port, socket_keepalive, socket_timeout).await?
+        connect_tls_with_options(
+            host,
+            port,
+            socket_keepalive,
+            socket_timeout,
+            connect_timeout,
+            keepalive_retries,
+        )
+        .await?
     } else {
-        connect(host, port, socket_keepalive, socket_timeout).await?
+        connect_plain_with_options(
+            host,
+            port,
+            socket_keepalive,
+            socket_timeout,
+            connect_timeout,
+            keepalive_retries,
+        )
+        .await?
     };
     #[cfg(not(feature = "tls"))]
-    let mut connection = connect(host, port, socket_keepalive, socket_timeout).await?;
+    let mut connection = connect_plain_with_options(
+        host,
+        port,
+        socket_keepalive,
+        socket_timeout,
+        connect_timeout,
+        keepalive_retries,
+    )
+    .await?;
 
     if let Some(password) = password {
         let mut auth = resp_array!["AUTH"];
@@ -221,30 +360,36 @@ pub async fn connect_with_auth(
 
         auth.push(password);
 
-        connection.send(auth).await?;
-        match connection.next().await {
-            Some(Ok(value)) => match resp::FromResp::from_resp(value) {
-                Ok(()) => (),
-                Err(e) => return Err(e),
-            },
-            Some(Err(e)) => return Err(e),
-            None => {
-                return Err(error::internal(
-                    "Connection closed before authentication complete",
-                ))
+        let auth_future = async {
+            connection.send(auth).await?;
+            match connection.next().await {
+                Some(Ok(value)) => match resp::FromResp::from_resp(value) {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(e),
+                },
+                Some(Err(e)) => Err(e),
+                None => Err(internal("Connection closed before authentication complete")),
             }
+        };
+
+        if let Some(timeout_dur) = connect_timeout {
+            timeout(timeout_dur, auth_future)
+                .await
+                .map_err(|_| internal("Authentication timed out"))??;
+        } else {
+            auth_future.await?;
         }
     }
 
     Ok(connection)
 }
 
-/// Apply a custom keep-alive value to the connection
 fn apply_keepalive_and_timeouts(
     stream: &TcpStream,
     socket_keepalive: Option<Duration>,
     socket_timeout: Option<Duration>,
-) -> Result<(), error::Error> {
+    keepalive_retries: Option<u32>,
+) -> Result<(), Error> {
     let sock_ref = socket2::SockRef::from(stream);
 
     if let Some(interval) = socket_keepalive {
@@ -265,7 +410,7 @@ fn apply_keepalive_and_timeouts(
             target_os = "tvos",
             target_os = "watchos",
         ))]
-        let keep_alive = keep_alive.with_retries(1);
+        let keep_alive = keep_alive.with_retries(keepalive_retries.unwrap_or(1));
         sock_ref.set_tcp_keepalive(&keep_alive)?;
     }
 
@@ -279,6 +424,8 @@ fn apply_keepalive_and_timeouts(
 
 #[cfg(test)]
 mod test {
+    use std::time::{Duration, Instant};
+
     use futures_util::{
         sink::SinkExt,
         stream::{self, StreamExt},
@@ -332,5 +479,28 @@ mod test {
             _ => panic!("Not an array"),
         };
         assert_eq!(values.len(), 1000);
+    }
+
+    #[tokio::test]
+    async fn connect_timeout_works() {
+        let start = Instant::now();
+        // 192.0.2.1 is part of TEST-NET-1 (RFC 5737) and is globally unrouteable.
+        // On some systems this causes connection attempts to hang (which tests the timeout path),
+        // while on others the network stack fails immediately (e.g., with NetworkUnreachable).
+        // This test provides useful coverage of the API path rather than a fully deterministic
+        // timeout assertion.
+        let res = super::connect_plain_with_options(
+            "192.0.2.1",
+            80,
+            None,
+            None,
+            Some(Duration::from_millis(100)),
+            None,
+        )
+        .await;
+        assert!(res.is_err());
+        let elapsed = start.elapsed();
+        // Ensure it completes within a reasonable timeframe and does not wait for the OS default timeout.
+        assert!(elapsed < Duration::from_secs(2));
     }
 }
